@@ -1,53 +1,58 @@
 # Subaroll
 
-A lightweight Rust/Tauri macOS and Windows tool for permanently burning text subtitles into video with FFmpeg and libass—the same subtitle-rendering family used by mpv/IINA.
+Subaroll burns external subtitle files into video or compresses video to a chosen file-size target. It is a native Rust/Tauri desktop app for Apple-silicon Macs and Windows 11, using FFmpeg and libass for video and subtitle rendering.
 
-## What it preserves
+## Features
 
-- `.ass`: keeps the subtitle file's fonts, colors, outlines, shadows, alignment, and signs. The Size and Position controls adjust dialogue while leaving positioned signs alone.
-- `.ssa`: converts to ASS, preserving authored styling where FFmpeg supports it.
-- `.srt`, `.vtt`, `.sub`, `.smi`: applies the fixed IINA-like plain-text preset: Arial, size 55 at a 720-line script resolution, white text, 3 px black outline, no shadow, bottom-center alignment.
-- The preview frame and final export use the same prepared ASS and libass filter.
-- Subtitle delay changes subtitle evaluation time without shifting the video or audio streams.
+### Subtitle burn-in
 
-This project is not affiliated with Crunchyroll or IINA. Crunchyroll-delivered ASS files contain their own authored styling; keeping that styling is more exact than guessing a universal Crunchyroll preset.
+- Supports SRT, ASS, SSA, VTT, SUB, and SMI subtitle files.
+- Preserves authored ASS styling, including fonts, colors, outlines, shadows, positioning, and signs where supported. Size and position controls adjust dialogue while keeping authored signs in place.
+- Plain-text subtitles use a consistent white, outlined preset; subtitle delay changes cue timing without shifting the video or audio.
+- Scrub a preview, adjust subtitle position against the full video frame, and render a short test before exporting.
+- Cinematic sources receive bottom padding when needed, so subtitles can be positioned in the padded frame without stretching the picture.
+- Burn-in exports preserve the source's resolution, aspect ratio, frame timing, and HDR/10-bit signaling where the selected format and encoder support them.
 
-## Run
+### File-size compression
 
-1. Install a full FFmpeg build containing the `subtitles`/libass filter.
-   - macOS with Homebrew: `brew install ffmpeg-full`
-   - Windows: install a full FFmpeg build and add its `bin` folder to PATH, or choose `ffmpeg.exe` inside the app.
-2. Install Rust with `rustup`, then run `npm install` once.
+- Set a target size; Subaroll calculates a bitrate budget and chooses a suitable output resolution and frame rate without upscaling.
+- Resolution is retained when the budget can support it. Higher frame rates are kept when the bitrate budget allows; frame rate is reduced only when required by a constrained target.
+- On Windows, Auto prefers a usable hardware AV1 encoder, then falls back to compatible hardware encoding or CPU encoding. NVIDIA NVENC, Intel Quick Sync, and AMD AMF options are detected and checked before use.
+- NVIDIA compression uses CQP 20 with a calculated correction pass when necessary to meet the size target. CPU encoding uses a slower two-pass mode for tighter size targeting.
+- On macOS, subtitle burn-in uses VideoToolbox hardware encoding. Compression uses FFmpeg's CPU encoder.
+
+## Changes in 1.1 since 1.0
+
+- **Compression keeps more source detail.** The bitrate-to-resolution thresholds were adjusted so a usable 1080p budget no longer triggers an early drop to 900p. The planner now accounts for source frame rate as well as bitrate: it keeps 60 fps when the budget supports at least 720p and lowers frame rate only when the target cannot support that combination. It never upscales a smaller source.
+- **The app is now named Subaroll.** The macOS and Windows product names, window title, release filenames, repository copy, and app icon use the Subaroll name and current CC icon. The macOS bundle identifier remains stable so saved app preferences are retained.
+- **Compression attribution is documented.** The compressor is an independent Rust implementation based on the workflow and design of [vladaad's DiscordCompressor](https://github.com/vladaad/discordcompressor); no upstream compressor binary is embedded.
+- **Release checks are more reliable.** The release test runner now fails on reported test failures and resolves Cargo through the configured Rust toolchain. The 1.1 packages are built for Apple silicon and Windows 11 x64.
+
+## Install 1.1
+
+- **macOS 11 or newer, Apple silicon only (M1 or newer):** download [Subaroll 1.1 for macOS](https://github.com/AbrahamYB/Subaroll/releases/download/v1.1/Subaroll_1.1_aarch64.dmg), drag Subaroll into Applications, then right-click the app and choose **Open** on first launch. Install FFmpeg once with `brew install ffmpeg-full`.
+- **Windows 11 x64:** download the [setup EXE](https://github.com/AbrahamYB/Subaroll/releases/download/v1.1/Subaroll_1.1_x64-setup.exe) (recommended) or [MSI installer](https://github.com/AbrahamYB/Subaroll/releases/download/v1.1/Subaroll_1.1_x64_en-US.msi). FFmpeg and FFprobe are included. If SmartScreen appears, choose **More info → Run anyway**.
+
+The release installers are unsigned and not notarized. Windows release packages include the pinned FFmpeg build documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Run from source
+
+1. Install Rust with `rustup`, Node.js, and a full FFmpeg build that includes libass.
+2. Run `npm install` once.
 3. Run `npm start`.
 
-The app automatically prefers Homebrew's `ffmpeg-full` on macOS. If FFmpeg is elsewhere, click the renderer badge and choose it.
+On macOS, Subaroll automatically prefers Homebrew's `ffmpeg-full`. If FFmpeg is installed elsewhere, choose its executable from the app.
 
-## Install a release
-
-- **macOS 11 or newer, Apple silicon only:** download the ARM64 `.dmg`, drag **Subaroll** into Applications, then right-click the app and choose **Open** the first time. Install the media engine once with `brew install ffmpeg-full`.
-- **Windows 11 x64:** download the `setup.exe` from GitHub Releases and run it. The installer includes the tested FFmpeg/FFprobe build, so no separate media-tool installation is required. Until the project has a paid code-signing certificate, Windows SmartScreen may require **More info → Run anyway**.
-
-Release builds are created natively by GitHub Actions: ARM64 on macOS and x64 on Windows 11. No Electron runtime is included.
-
-## Build folders
+## Build
 
 - macOS: `npm run build:mac`
-- Windows (run on Windows): `npm run build:win`
+- Windows, run on Windows: `npm run build:win`
+- Run automated checks: `npm test`
 
-The native bundles are written below `src-tauri/target/release/bundle/`. The public Windows installer bundles the pinned GPL FFmpeg build documented in `THIRD_PARTY_NOTICES.md`; local builds and the macOS package use an installed FFmpeg.
+Release builds are produced natively by GitHub Actions: ARM64 on macOS and x64 on Windows. Subaroll is built with Rust and Tauri; releases do not include Electron.
 
-## Export behavior
+## Credits and license
 
-- Subtitle burn-in preserves source resolution, aspect ratio, frame timing, HDR/10-bit signaling, metadata, and chapters. macOS uses HEVC VideoToolbox. Windows detects NVIDIA NVENC, AMD AMF, or Intel Quick Sync and falls back to x264/x265 when required.
-- Target-size compression automatically chooses output bitrate and resolution. On Windows, Auto prefers a usable hardware AV1 encoder (NVIDIA NVENC, Intel Quick Sync, then AMD AMF), with an explicit H.264 compatibility option. NVIDIA uses CQP 20 and allows one calculated QP correction pass if the result exceeds the selected size. Unavailable hardware falls back through H.264 hardware and then adaptive CPU x264 two-pass encoding.
-- GPU recipes are initialized at the intended output resolution before an export begins, so an encoder merely appearing in FFmpeg's list is not treated as usable.
-- MP4 output uses AAC audio for compatibility. Metadata and chapters are retained where the output container supports them.
+The target-size compression feature is independently written in Rust, using the workflow and design of [vladaad's DiscordCompressor](https://github.com/vladaad/discordcompressor) as its reference. Full credit to vladaad for the original compression approach. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for bundled component licenses.
 
-## Credits
-
-The target-size video compression feature is based on the workflow and design of
-[vladaad's DiscordCompressor](https://github.com/vladaad/discordcompressor), an
-AGPL-3.0 project that compresses video to a chosen file-size target with FFmpeg.
-Subaroll's compression implementation is independently written in Rust,
-with full credit to vladaad for the original compression approach and reference
-workflow.
+Subaroll's code is released under the MIT License. Third-party components keep their own licenses.
