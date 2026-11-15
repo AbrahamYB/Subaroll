@@ -29,6 +29,8 @@ test('compression mode is integrated into the native app UI', () => {
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
   assert.match(html, /id="compressMode"/);
   assert.match(html, /id="targetSize"/);
+  assert.match(html, /id="compressionCodec"/);
+  assert.match(html, /Auto · prefer hardware AV1/);
   assert.match(html, /id="targetDown"[\s\S]*id="targetUp"/);
   assert.match(html, /id="videoPicker"[\s\S]*id="compressionOptions"[\s\S]*class="subtitle-only">Subtitles/);
   assert.match(renderer, /startCompression/);
@@ -36,12 +38,15 @@ test('compression mode is integrated into the native app UI', () => {
   assert.match(renderer, /state\.mode === 'compress'/);
   assert.doesNotMatch(html, /outputPicker|Choose destination/);
   assert.match(renderer, /The compressed file saves beside the source automatically/);
+  assert.match(renderer, /codecPreference/);
+  assert.match(renderer, /availableAv1Encoders/);
 });
 
 test('Windows compression auto-detects hardware and reports the encoder used', () => {
   const backend = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'src', 'media.rs'), 'utf8');
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
   assert.match(backend, /for encoder in \["h264_nvenc", "h264_qsv", "h264_amf"\]/);
+  assert.match(backend, /for encoder in \["av1_nvenc", "av1_qsv", "av1_amf"\]/);
   assert.match(backend, /compression_recipe_usable/);
   assert.match(backend, /name: "libx264"\.into\(\)/);
   assert.match(backend, /"-preset", "p5"/);

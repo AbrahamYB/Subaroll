@@ -1,7 +1,7 @@
 const api = window.subtitleBurner;
 const state = {
   videoPath: '', subtitlePath: '', outputPath: '', metadata: null,
-  mode: 'subtitles', exporting: false, previewTimer: null, previewRequest: 0, videoEncoder: '', platform: '', availableVideoEncoders: [], renderedPreviewSettings: null, renderedPreviewLayout: null, subtitleTiming: null, subtitleWarning: '',
+  mode: 'subtitles', exporting: false, previewTimer: null, previewRequest: 0, videoEncoder: '', platform: '', availableVideoEncoders: [], availableAv1Encoders: [], renderedPreviewSettings: null, renderedPreviewLayout: null, subtitleTiming: null, subtitleWarning: '',
 };
 
 const $ = id => document.getElementById(id);
@@ -19,6 +19,7 @@ const elements = {
   subtitleMode: $('subtitleMode'), compressMode: $('compressMode'), compressionOptions: $('compressionOptions'),
   targetSize: $('targetSize'), previewNote: document.querySelector('.preview-note'), subtitleOnly: [...document.querySelectorAll('.subtitle-only')],
   targetDown: $('targetDown'), targetUp: $('targetUp'),
+  compressionCodec: $('compressionCodec'), compressionCodecHint: $('compressionCodecHint'),
   modeEyebrow: $('modeEyebrow'), modeTitle: $('modeTitle'),
 };
 
@@ -46,6 +47,7 @@ function settings() {
   };
 }
 const SETTINGS_KEY = 'subtitleBurner.subtitleSettings';
+const COMPRESSION_CODEC_KEY = 'subtitleBurner.compressionCodec';
 function saveSubtitleSettings() {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...settings(), settingsVersion: 4 }));
 }
@@ -150,6 +152,16 @@ async function checkTools() {
     state.videoEncoder = result.videoEncoder;
     state.platform = result.platform || '';
     state.availableVideoEncoders = result.availableVideoEncoders || [];
+    state.availableAv1Encoders = result.availableAv1Encoders || [];
+    const av1Option = elements.compressionCodec.querySelector('option[value="av1"]');
+    av1Option.disabled = state.availableAv1Encoders.length === 0;
+    const savedCodec = localStorage.getItem(COMPRESSION_CODEC_KEY);
+    if (['auto', 'av1', 'h264'].includes(savedCodec)) elements.compressionCodec.value = savedCodec;
+    if (elements.compressionCodec.selectedOptions[0]?.disabled) elements.compressionCodec.value = 'auto';
+    const av1Labels = { nvenc: 'NVIDIA NVENC', qsv: 'Intel Quick Sync', amf: 'AMD AMF' };
+    elements.compressionCodecHint.textContent = state.availableAv1Encoders.length
+      ? `Hardware AV1 ready: ${state.availableAv1Encoders.map(value => av1Labels[value]).join(' + ')}.`
+      : 'No usable hardware AV1 encoder detected; Auto uses H.264 or CPU fallback.';
     const windows = state.platform === 'windows';
     elements.windowsEncoderCard.hidden = !windows;
     if (windows) {
@@ -317,6 +329,9 @@ elements.targetSize.addEventListener('input', () => {
   updateAutomaticOutput();
   refreshReady();
 });
+elements.compressionCodec.addEventListener('change', () => {
+  localStorage.setItem(COMPRESSION_CODEC_KEY, elements.compressionCodec.value);
+});
 function stepTargetSize(delta) {
   const current = Number(elements.targetSize.value) || 25;
   elements.targetSize.value = String(Math.max(1, Math.min(10000, current + delta)));
@@ -335,6 +350,7 @@ async function startCompression() {
   elements.progressBar.style.width = '0%';
   elements.progressValue.textContent = '0%';
   const targetSizeMB = Number(elements.targetSize.value);
+  const codecPreference = elements.compressionCodec.value;
   const compressionEngine = state.platform === 'windows'
     ? 'Automatically testing NVIDIA, Intel, and AMD hardware encoders; CPU two-pass is the fallback.'
     : 'Using quality-first CPU two-pass compression.';
@@ -342,12 +358,13 @@ async function startCompression() {
   fitWindowToContent();
   try {
     const result = await api.startCompression({
-      videoPath: state.videoPath, outputPath: state.outputPath, metadata: state.metadata, targetSizeMB,
+      videoPath: state.videoPath, outputPath: state.outputPath, metadata: state.metadata, targetSizeMB, codecPreference,
     });
     const actualMB = result.bytes / 1024 / 1024;
-    const encoderLabel = /nvenc/.test(result.encoder) ? `NVIDIA NVENC CQP ${result.nvencQp || 20}`
-      : /qsv/.test(result.encoder) ? 'Intel Quick Sync'
-        : /amf/.test(result.encoder) ? 'AMD AMF'
+    const codecLabel = /^av1_/.test(result.encoder) ? 'AV1' : 'H.264';
+    const encoderLabel = /nvenc/.test(result.encoder) ? `NVIDIA ${codecLabel} NVENC CQP ${result.nvencQp || 20}`
+      : /qsv/.test(result.encoder) ? `Intel ${codecLabel} Quick Sync`
+        : /amf/.test(result.encoder) ? `AMD ${codecLabel} AMF`
           : 'CPU x264 two-pass';
     setStatus(`Finished with ${encoderLabel}: ${basename(result.output)} • ${actualMB.toFixed(1)} MB • ${result.metadata.width}×${result.metadata.height} — click here to show it.`, 'success');
     elements.status.onclick = () => api.revealOutput(result.output);

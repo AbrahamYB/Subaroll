@@ -32,6 +32,7 @@ pub struct ToolStatus {
     video_encoder: Option<String>,
     platform: String,
     available_video_encoders: Vec<String>,
+    available_av1_encoders: Vec<String>,
     error: Option<String>,
 }
 
@@ -125,6 +126,12 @@ pub struct CompressionInput {
     output_path: String,
     metadata: Option<MediaMetadata>,
     target_size_mb: f64,
+    #[serde(default = "default_compression_codec")]
+    codec_preference: String,
+}
+
+fn default_compression_codec() -> String {
+    "auto".into()
 }
 
 #[derive(Serialize)]
@@ -260,6 +267,26 @@ fn available_windows_encoders(ffmpeg: &str) -> Vec<String> {
     .collect()
 }
 
+fn available_windows_av1_encoders(ffmpeg: &str) -> Vec<String> {
+    [
+        ("nvenc", "av1_nvenc"),
+        ("qsv", "av1_qsv"),
+        ("amf", "av1_amf"),
+    ]
+    .into_iter()
+    .filter(|(_, encoder)| {
+        supports_encoder(ffmpeg, encoder)
+            && compression_recipe_usable(
+                ffmpeg,
+                &compression_hardware_recipe(encoder, 4_000_000),
+                1920,
+                1080,
+            )
+    })
+    .map(|(family, _)| family.to_owned())
+    .collect()
+}
+
 fn find_tools(custom: Option<String>) -> Option<Tools> {
     let mut candidates = Vec::new();
     if let Some(value) = custom {
@@ -337,12 +364,18 @@ pub fn tool_status(state: State<AppState>) -> ToolStatus {
             } else {
                 vec![t.video_encoder.clone()]
             };
+            let available_av1_encoders = if cfg!(target_os = "windows") {
+                available_windows_av1_encoders(&t.ffmpeg)
+            } else {
+                Vec::new()
+            };
             ToolStatus {
                 ok: true,
                 ffmpeg: Some(t.ffmpeg),
                 video_encoder: Some(t.video_encoder),
                 platform: std::env::consts::OS.into(),
                 available_video_encoders,
+                available_av1_encoders,
                 error: None,
             }
         }
@@ -352,6 +385,7 @@ pub fn tool_status(state: State<AppState>) -> ToolStatus {
             video_encoder: None,
             platform: std::env::consts::OS.into(),
             available_video_encoders: Vec::new(),
+            available_av1_encoders: Vec::new(),
             error: Some(e),
         },
     }
@@ -1568,23 +1602,39 @@ fn compression_plan(m: &MediaMetadata, mb: f64) -> CompressionPlan {
         64_000
     };
     let video = total.saturating_sub(audio).max(120_000);
-    let max_h = if video >= 5_000_000 {
-        1080
-    } else if video >= 3_000_000 {
-        900
-    } else if video >= 1_500_000 {
-        720
-    } else if video >= 800_000 {
-        540
-    } else {
-        480
-    };
+    let max_h = compression_output_height(video, false);
     CompressionPlan {
         target_bytes: target,
         total_bitrate: total,
         video_bitrate: video,
         audio_bitrate: audio,
         output_height: m.height.min(max_h),
+    }
+}
+
+fn compression_output_height(video_bitrate: u64, av1: bool) -> u64 {
+    if av1 {
+        if video_bitrate >= 3_000_000 {
+            1080
+        } else if video_bitrate >= 2_000_000 {
+            900
+        } else if video_bitrate >= 1_000_000 {
+            720
+        } else if video_bitrate >= 600_000 {
+            540
+        } else {
+            480
+        }
+    } else if video_bitrate >= 5_000_000 {
+        1080
+    } else if video_bitrate >= 3_000_000 {
+        900
+    } else if video_bitrate >= 1_500_000 {
+        720
+    } else if video_bitrate >= 800_000 {
+        540
+    } else {
+        480
     }
 }
 
@@ -1609,7 +1659,7 @@ fn compression_hardware_recipe_with_qp(
     let maxrate = ((video_bitrate as f64 * 1.25) as u64).to_string();
     let bufsize = (video_bitrate * 2).to_string();
     let nvenc_qp_string = nvenc_qp.to_string();
-    let mut args = if encoder == "h264_nvenc" {
+    let mut args = if encoder.ends_with("_nvenc") {
         vec![
             "-c:v",
             encoder,
@@ -1625,12 +1675,8 @@ fn compression_hardware_recipe_with_qp(
             "qres",
             "-spatial-aq",
             "1",
-            "-bf",
-            "3",
-            "-b_ref_mode",
-            "middle",
         ]
-    } else if encoder == "h264_qsv" {
+    } else if encoder.ends_with("_qsv") {
         vec!["-c:v", encoder, "-preset", "slow"]
     } else {
         vec!["-c:v", encoder, "-quality", "quality", "-rc", "vbr_peak"]
@@ -1638,7 +1684,7 @@ fn compression_hardware_recipe_with_qp(
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    if encoder != "h264_nvenc" {
+    if !encoder.ends_with("_nvenc") {
         args.extend([
             "-b:v".into(),
             bitrate,
@@ -1648,12 +1694,20 @@ fn compression_hardware_recipe_with_qp(
             bufsize,
         ]);
     }
+    if encoder == "h264_nvenc" {
+        args.extend([
+            "-bf".into(),
+            "3".into(),
+            "-b_ref_mode".into(),
+            "middle".into(),
+        ]);
+    }
     args.extend(["-pix_fmt".into(), "yuv420p".into()]);
     CompressionEncoder {
         name: encoder.into(),
         args,
         hardware: true,
-        nvenc_qp: (encoder == "h264_nvenc").then_some(nvenc_qp),
+        nvenc_qp: encoder.ends_with("_nvenc").then_some(nvenc_qp),
     }
 }
 
@@ -1694,8 +1748,19 @@ fn automatic_compression_encoder(
     video_bitrate: u64,
     width: u64,
     height: u64,
+    codec_preference: &str,
 ) -> CompressionEncoder {
     if cfg!(target_os = "windows") {
+        if codec_preference != "h264" {
+            for encoder in ["av1_nvenc", "av1_qsv", "av1_amf"] {
+                if supports_encoder(ffmpeg, encoder) {
+                    let recipe = compression_hardware_recipe(encoder, video_bitrate);
+                    if compression_recipe_usable(ffmpeg, &recipe, width, height) {
+                        return recipe;
+                    }
+                }
+            }
+        }
         for encoder in ["h264_nvenc", "h264_qsv", "h264_amf"] {
             if supports_encoder(ffmpeg, encoder) {
                 let recipe = compression_hardware_recipe(encoder, video_bitrate);
@@ -1742,17 +1807,23 @@ pub async fn start_compression(
             Some(m) => m,
             None => probe_media(&tools.ffprobe, &input.video_path)?,
         };
-        let plan = compression_plan(&m, input.target_size_mb);
-        let output_width = ((m.width as f64 * plan.output_height as f64 / m.height.max(1) as f64)
-            .round() as u64)
-            .max(2)
-            & !1;
+        let mut plan = compression_plan(&m, input.target_size_mb);
+        let probe_height = m.height.min(1080);
+        let probe_width =
+            ((m.width as f64 * probe_height as f64 / m.height.max(1) as f64).round() as u64).max(2)
+                & !1;
         let mut encoder = automatic_compression_encoder(
             &tools.ffmpeg,
             plan.video_bitrate,
-            output_width,
-            plan.output_height,
+            probe_width,
+            probe_height,
+            &input.codec_preference,
         );
+        if encoder.name.starts_with("av1_") {
+            plan.output_height = m
+                .height
+                .min(compression_output_height(plan.video_bitrate, true));
+        }
         let dir = tempfile::Builder::new()
             .prefix("SubtitleBurnerCompress-")
             .tempdir()
@@ -1853,7 +1924,7 @@ pub async fn start_compression(
             &final_args,
             m.duration,
             if encoder.hardware { 0.0 } else { 0.5 },
-            if encoder.name == "h264_nvenc" {
+            if encoder.name.ends_with("_nvenc") {
                 0.7
             } else if encoder.hardware {
                 1.0
@@ -1866,12 +1937,16 @@ pub async fn start_compression(
         let mut bytes = fs::metadata(&input.output_path)
             .map_err(|e| e.to_string())?
             .len();
-        if encoder.name == "h264_nvenc" && bytes as f64 > plan.target_bytes as f64 * 1.03 {
+        if encoder.name.ends_with("_nvenc") && bytes as f64 > plan.target_bytes as f64 * 1.03 {
             let ratio = bytes as f64 / plan.target_bytes as f64;
             let qp_increase = (ratio.log2() * 6.0).ceil().max(1.0) as u64 + 1;
             let corrected_qp = (encoder.nvenc_qp.unwrap_or(20) + qp_increase).min(32);
-            encoder =
-                compression_hardware_recipe_with_qp("h264_nvenc", plan.video_bitrate, corrected_qp);
+            let encoder_name = encoder.name.clone();
+            encoder = compression_hardware_recipe_with_qp(
+                &encoder_name,
+                plan.video_bitrate,
+                corrected_qp,
+            );
             let mut retry_args = common_base;
             retry_args.extend(encoder.args.clone());
             append_output(&mut retry_args);
@@ -2020,9 +2095,46 @@ mod tests {
     }
 
     #[test]
+    fn av1_hardware_recipes_cover_nvidia_intel_and_amd() {
+        let nvenc = compression_hardware_recipe("av1_nvenc", 3_200_000);
+        let qsv = compression_hardware_recipe("av1_qsv", 3_200_000);
+        let amf = compression_hardware_recipe("av1_amf", 3_200_000);
+        let has = |args: &[String], key: &str, value: &str| {
+            args.windows(2)
+                .any(|pair| pair[0] == key && pair[1] == value)
+        };
+        assert!(has(&nvenc.args, "-rc", "constqp"));
+        assert!(has(&nvenc.args, "-qp", "20"));
+        assert_eq!(nvenc.nvenc_qp, Some(20));
+        assert!(!nvenc.args.iter().any(|value| value == "-b_ref_mode"));
+        assert!(has(&qsv.args, "-preset", "slow"));
+        assert!(has(&qsv.args, "-b:v", "3200000"));
+        assert!(has(&amf.args, "-quality", "quality"));
+        assert!(has(&amf.args, "-rc", "vbr_peak"));
+    }
+
+    #[test]
+    fn av1_keeps_more_resolution_at_discord_bitrates_without_upscaling() {
+        assert_eq!(compression_output_height(3_200_000, false), 900);
+        assert_eq!(compression_output_height(3_200_000, true), 1080);
+        assert_eq!(compression_output_height(1_100_000, false), 540);
+        assert_eq!(compression_output_height(1_100_000, true), 720);
+        let source_height = 480;
+        assert_eq!(
+            source_height.min(compression_output_height(8_000_000, true)),
+            480
+        );
+    }
+
+    #[test]
     fn compression_falls_back_to_cpu_when_hardware_is_unavailable() {
-        let encoder =
-            automatic_compression_encoder("/definitely/missing/ffmpeg", 4_000_000, 1920, 1080);
+        let encoder = automatic_compression_encoder(
+            "/definitely/missing/ffmpeg",
+            4_000_000,
+            1920,
+            1080,
+            "auto",
+        );
         assert_eq!(encoder.name, "libx264");
         assert!(!encoder.hardware);
     }

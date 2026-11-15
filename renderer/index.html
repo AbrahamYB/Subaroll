@@ -44,7 +44,7 @@
           <label>Video</label>
           <button id="videoPicker" class="file-picker"><span id="videoName">Choose video…</span><b>Browse</b></button>
           <div id="compressionOptions" class="compression-options" hidden>
-            <div>
+            <div class="compression-copy">
               <strong>Discord file-size target</strong>
               <span>Automatically calculates bitrate and resolution to fit.</span>
             </div>
@@ -54,6 +54,15 @@
               <button id="targetUp" type="button" aria-label="Increase target size">+</button>
               <span>MB</span>
             </div>
+            <label class="codec-picker" for="compressionCodec">
+              <span>Codec</span>
+              <select id="compressionCodec">
+                <option value="auto">Auto · prefer hardware AV1</option>
+                <option value="av1">AV1 hardware · best quality</option>
+                <option value="h264">H.264 · widest compatibility</option>
+              </select>
+              <small id="compressionCodecHint">AV1 is enabled only when the GPU passes a real encoder test.</small>
+            </label>
           </div>
           <label class="subtitle-only">Subtitles</label>
           <button id="subtitlePicker" class="file-picker subtitle-only"><span id="subtitleName">Choose SRT, ASS, SSA or VTT…</span><b>Browse</b></button>

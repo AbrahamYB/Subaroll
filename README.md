@@ -32,6 +32,6 @@ The native bundles are written below `src-tauri/target/release/bundle/`. FFmpeg 
 ## Export behavior
 
 - Subtitle burn-in preserves source resolution, aspect ratio, frame timing, HDR/10-bit signaling, metadata, and chapters. macOS uses HEVC VideoToolbox. Windows detects NVIDIA NVENC, AMD AMF, or Intel Quick Sync and falls back to x264/x265 when required.
-- Target-size compression automatically chooses output bitrate and resolution. On Windows it prefers NVIDIA NVENC CQP 20, then Quick Sync, then AMF. If CQP 20 exceeds the selected size, one calculated QP correction pass is allowed. Unavailable hardware falls back to adaptive CPU x264 two-pass encoding.
+- Target-size compression automatically chooses output bitrate and resolution. On Windows, Auto prefers a usable hardware AV1 encoder (NVIDIA NVENC, Intel Quick Sync, then AMD AMF), with an explicit H.264 compatibility option. NVIDIA uses CQP 20 and allows one calculated QP correction pass if the result exceeds the selected size. Unavailable hardware falls back through H.264 hardware and then adaptive CPU x264 two-pass encoding.
 - GPU recipes are initialized at the intended output resolution before an export begins, so an encoder merely appearing in FFmpeg's list is not treated as usable.
 - MP4 output uses AAC audio for compatibility. Metadata and chapters are retained where the output container supports them.
