@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Subtitle Burner</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="window-drag-region" data-tauri-drag-region aria-hidden="true"></div>
+  <main class="app-shell">
+    <section class="workspace">
+      <div class="preview-panel panel">
+        <div id="previewStage" class="preview-stage">
+          <img id="previewFrame" class="preview-frame" alt="Video preview frame">
+          <img id="previewSubtitles" class="preview-subtitles" alt="Rendered subtitle preview">
+          <div id="emptyPreview" class="empty-preview">
+            <div class="preview-icon">CC</div>
+            <strong>Exact rendered preview</strong>
+            <span>Choose a video and subtitle file</span>
+          </div>
+          <div id="previewSpinner" class="spinner" hidden></div>
+        </div>
+        <div class="seek-row">
+          <span id="seekCurrent">00:00</span>
+          <input id="seek" type="range" min="0" max="100" value="0" step="0.1" disabled>
+          <span id="seekDuration">00:00</span>
+        </div>
+        <p class="preview-note">Position and size update instantly. The subtitle layer is rendered by libass.</p>
+        <div class="brand-block">
+          <p id="modeEyebrow" class="eyebrow">LIBASS BURN-IN</p>
+          <h1 id="modeTitle">Burn subtitles</h1>
+        </div>
+        <section class="mode-panel">
+          <div class="mode-switch" role="group" aria-label="Export mode">
+            <button id="subtitleMode" class="active" type="button">Burn subtitles</button>
+            <button id="compressMode" type="button">Compress video</button>
+          </div>
+        </section>
+      </div>
+
+      <aside class="controls panel">
+        <section class="file-group">
+          <label>Video</label>
+          <button id="videoPicker" class="file-picker"><span id="videoName">Choose video…</span><b>Browse</b></button>
+          <div id="compressionOptions" class="compression-options" hidden>
+            <div>
+              <strong>Discord file-size target</strong>
+              <span>Automatically calculates bitrate and resolution to fit.</span>
+            </div>
+            <div class="size-input">
+              <button id="targetDown" type="button" aria-label="Decrease target size">−</button>
+              <input id="targetSize" type="number" min="1" max="10000" step="1" value="25" aria-label="Target size in megabytes">
+              <button id="targetUp" type="button" aria-label="Increase target size">+</button>
+              <span>MB</span>
+            </div>
+          </div>
+          <label class="subtitle-only">Subtitles</label>
+          <button id="subtitlePicker" class="file-picker subtitle-only"><span id="subtitleName">Choose SRT, ASS, SSA or VTT…</span><b>Browse</b></button>
+        </section>
+
+        <section class="control-card subtitle-only">
+          <div class="control-heading"><label for="delay">Subtitle delay</label><output id="delayValue">0.00 s</output></div>
+          <input id="delay" type="range" min="-5" max="5" value="0" step="0.05">
+          <div class="range-labels"><span>Earlier</span><span>0</span><span>Later</span></div>
+        </section>
+
+        <section class="control-card subtitle-only">
+          <div class="control-heading"><label for="position">Position</label><output id="positionValue">Original</output></div>
+          <input id="position" type="range" min="0" max="100" value="95" step="1">
+          <div class="range-labels"><span>Top</span><span>Middle</span><span>Bottom</span></div>
+        </section>
+
+        <section class="control-card subtitle-only">
+          <div class="control-heading"><label for="scale">Size</label><output id="scaleValue">100%</output></div>
+          <input id="scale" type="range" min="50" max="180" value="100" step="1">
+          <div class="range-labels"><span>Smaller</span><span>100%</span><span>Larger</span></div>
+        </section>
+
+        <section class="control-card quality-card subtitle-only">
+          <div class="control-heading"><label for="quality">Encoding quality</label><output id="qualityValue">CQ 90 · Visually lossless</output></div>
+          <input id="quality" type="range" min="60" max="100" value="90" step="1">
+          <div class="range-labels"><span>Smaller file</span><span>High</span><span>Maximum</span></div>
+          <p id="qualityHint" class="quality-hint">CQ is passed directly to HEVC VideoToolbox; CQ 90 means q90.</p>
+        </section>
+
+        <section id="windowsEncoderCard" class="control-card encoder-card subtitle-only" hidden>
+          <div class="control-heading"><label for="windowsEncoder">Windows encoder</label><output id="encoderAvailability">Detecting…</output></div>
+          <div class="encoder-fields">
+            <label for="windowsEncoder">GPU</label>
+            <select id="windowsEncoder">
+              <option value="auto">Auto · best available</option>
+              <option value="nvenc">NVIDIA NVENC</option>
+              <option value="amf">AMD AMF</option>
+              <option value="qsv">Intel Quick Sync</option>
+              <option value="software">CPU software</option>
+            </select>
+            <label for="windowsPreset">Preset</label>
+            <select id="windowsPreset">
+              <option value="quality">CTT Quality · best</option>
+              <option value="balanced">Balanced</option>
+              <option value="fast">Fast</option>
+            </select>
+          </div>
+          <p id="encoderHint" class="quality-hint">CTT/Smoothie quality parameters; codec, 10-bit, HDR, resolution, and color metadata stay automatic.</p>
+        </section>
+
+        <div id="progressWrap" class="progress-wrap" hidden>
+          <div class="progress-copy"><span>Burning subtitles…</span><strong id="progressValue">0%</strong></div>
+          <div class="progress-track"><div id="progressBar"></div></div>
+        </div>
+
+        <div class="actions">
+          <button id="cancelButton" class="secondary" hidden>Cancel</button>
+          <button id="testButton" class="secondary test-button subtitle-only" disabled>30-second test</button>
+          <button id="exportButton" class="primary" disabled>Burn subtitles</button>
+        </div>
+        <p id="status" class="status">Ready when your files are selected.</p>
+      </aside>
+    </section>
+  </main>
+  <script src="tauri-api.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

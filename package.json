@@ -1,0 +1,17 @@
+{
+  "name": "subtitle-burner",
+  "version": "1.0.0",
+  "description": "Native Rust/Tauri IINA/libass-style subtitle burn-in tool",
+  "author": "Local project",
+  "license": "MIT",
+  "scripts": {
+    "start": "node scripts/run-tauri.js dev",
+    "test": "node --test test/*.test.js && node scripts/run-cargo.js test --manifest-path src-tauri/Cargo.toml",
+    "build:mac": "node scripts/run-tauri.js build --bundles app",
+    "build:win": "node scripts/run-tauri.js build --bundles nsis",
+    "update:installed:mac": "./scripts/update-installed-mac.sh"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.3"
+  }
+}
