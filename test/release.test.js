@@ -13,7 +13,7 @@ test('release workflow builds only Apple-silicon macOS and Windows 11 x64', () =
   assert.match(workflow, /x86_64-pc-windows-msvc/);
   assert.match(workflow, /--bundles dmg/);
   assert.match(workflow, /--bundles nsis,msi/);
-  assert.match(workflow, /node-version: 24/);
+  assert.match(workflow, /node-version: 26/);
 });
 
 test('Windows release bundles a checksum-pinned FFmpeg with libass', () => {
