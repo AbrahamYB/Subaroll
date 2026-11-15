@@ -22,12 +22,19 @@ This project is not affiliated with Crunchyroll or IINA. Crunchyroll-delivered A
 
 The app automatically prefers Homebrew's `ffmpeg-full` on macOS. If FFmpeg is elsewhere, click the renderer badge and choose it.
 
+## Install a release
+
+- **macOS 11 or newer, Apple silicon only:** download the ARM64 `.dmg`, drag **Subtitle Burner** into Applications, then right-click the app and choose **Open** the first time. Install the media engine once with `brew install ffmpeg-full`.
+- **Windows 11 x64:** download the `setup.exe` from GitHub Releases and run it. The installer includes the tested FFmpeg/FFprobe build, so no separate media-tool installation is required. Until the project has a paid code-signing certificate, Windows SmartScreen may require **More info → Run anyway**.
+
+Release builds are created natively by GitHub Actions: ARM64 on macOS and x64 on Windows 11. No Electron runtime is included.
+
 ## Build folders
 
 - macOS: `npm run build:mac`
 - Windows (run on Windows): `npm run build:win`
 
-The native bundles are written below `src-tauri/target/release/bundle/`. FFmpeg itself is not redistributed in the package; install it separately or choose its executable in the app.
+The native bundles are written below `src-tauri/target/release/bundle/`. The public Windows installer bundles the pinned GPL FFmpeg build documented in `THIRD_PARTY_NOTICES.md`; local builds and the macOS package use an installed FFmpeg.
 
 ## Export behavior
 

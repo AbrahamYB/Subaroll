@@ -1,0 +1,70 @@
+name: Release native apps
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS ARM64
+            os: macos-14
+            rust_target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin --bundles dmg --config src-tauri/tauri.release.macos.json
+          - name: Windows 11 x64
+            os: windows-2022
+            rust_target: x86_64-pc-windows-msvc
+            args: --target x86_64-pc-windows-msvc --bundles nsis,msi --config src-tauri/tauri.release.windows.json
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Prepare bundled FFmpeg for Windows
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: npm run prepare:ffmpeg:win
+
+      - name: Run automated tests
+        run: npm test
+
+      - name: Build and publish native installer
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: Subtitle Burner v__VERSION__
+          releaseBody: |
+            Native Rust/Tauri release—no Electron runtime.
+
+            **macOS:** Apple silicon only (M1 or newer), macOS 11+. Download the ARM64 DMG, drag the app to Applications, then right-click → Open on first launch. Requires `brew install ffmpeg-full`.
+
+            **Windows:** Windows 11 x64. Download the setup EXE (recommended) or MSI and run it. FFmpeg and FFprobe are included. If SmartScreen appears, choose More info → Run anyway.
+
+            These binaries are currently unsigned. Hardware encoders are detected and initialized before use; unsupported hardware falls back safely.
+          releaseDraft: false
+          prerelease: false
+          uploadUpdaterJson: false
+          args: ${{ matrix.args }}

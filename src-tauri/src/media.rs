@@ -308,7 +308,14 @@ fn find_tools(custom: Option<String>) -> Option<Tools> {
         .map(str::to_owned),
     );
     #[cfg(target_os = "windows")]
-    candidates.push("ffmpeg.exe".into());
+    {
+        if let Ok(executable) = std::env::current_exe() {
+            if let Some(directory) = executable.parent() {
+                candidates.push(directory.join("ffmpeg.exe").to_string_lossy().into_owned());
+            }
+        }
+        candidates.push("ffmpeg.exe".into());
+    }
     #[cfg(not(target_os = "windows"))]
     candidates.push("ffmpeg".into());
     let mut seen = HashSet::new();
