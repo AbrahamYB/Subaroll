@@ -44,15 +44,15 @@
           <label>Video</label>
           <button id="videoPicker" class="file-picker"><span id="videoName">Choose video…</span><b>Browse</b></button>
           <div id="compressionOptions" class="compression-options" hidden>
-            <div class="compression-copy">
+            <div class="target-row">
               <strong>Discord file-size target</strong>
-              <span>Automatically calculates bitrate and resolution to fit.</span>
-            </div>
-            <div class="size-input">
-              <button id="targetDown" type="button" aria-label="Decrease target size">−</button>
-              <input id="targetSize" type="number" min="1" max="10000" step="1" value="25" aria-label="Target size in megabytes">
-              <button id="targetUp" type="button" aria-label="Increase target size">+</button>
-              <span>MB</span>
+              <div class="size-input">
+                <button id="targetDown" type="button" aria-label="Decrease target size">−</button>
+                <input id="targetSize" type="number" min="1" max="10000" step="1" value="25" aria-label="Target size in megabytes">
+                <button id="targetUp" type="button" aria-label="Increase target size">+</button>
+                <span>MB</span>
+              </div>
+              <small>Automatically calculates bitrate and resolution to fit.</small>
             </div>
             <label class="codec-picker" for="compressionCodec">
               <span>Codec</span>

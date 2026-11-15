@@ -27,11 +27,13 @@ test('HDR compression tone maps to Discord-compatible SDR', () => {
 test('compression mode is integrated into the native app UI', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
+  const css = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.css'), 'utf8');
   assert.match(html, /id="compressMode"/);
   assert.match(html, /id="targetSize"/);
   assert.match(html, /id="compressionCodec"/);
   assert.match(html, /Auto · prefer hardware AV1/);
   assert.match(html, /id="targetDown"[\s\S]*id="targetUp"/);
+  assert.match(html, /class="target-row"/);
   assert.match(html, /id="videoPicker"[\s\S]*id="compressionOptions"[\s\S]*class="subtitle-only">Subtitles/);
   assert.match(renderer, /startCompression/);
   assert.match(renderer, /function stepTargetSize/);
@@ -40,6 +42,7 @@ test('compression mode is integrated into the native app UI', () => {
   assert.match(renderer, /The compressed file saves beside the source automatically/);
   assert.match(renderer, /codecPreference/);
   assert.match(renderer, /availableAv1Encoders/);
+  assert.match(css, /\.target-row > small[^}]*font-weight: 500/);
 });
 
 test('Windows compression auto-detects hardware and reports the encoder used', () => {
