@@ -17,7 +17,7 @@ jobs:
       matrix:
         include:
           - name: macOS ARM64
-            os: macos-14
+            os: macos-15
             rust_target: aarch64-apple-darwin
             args: --target aarch64-apple-darwin --bundles dmg --config src-tauri/tauri.release.macos.json
           - name: Windows 11 x64
