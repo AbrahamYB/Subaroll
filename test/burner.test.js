@@ -161,18 +161,20 @@ test('non-macOS builds retain the portable software encoder', () => {
   assert.deepEqual(encoder.args.slice(0, 4), ['-c:v', 'libx264', '-preset', 'medium']);
 });
 
-test('macOS hardware encoder uses the high-quality VideoToolbox recipe when available', (t) => {
+test('macOS HEVC hardware encoder uses the high-quality VideoToolbox recipe', () => {
+  if (process.platform !== 'darwin') return;
   const encoder = videoEncoderArgs(TEST_FFMPEG, 'darwin');
-  if (encoder.name !== 'h264_videotoolbox') return t.skip('VideoToolbox encoder unavailable');
+  assert.equal(encoder.name, 'hevc_videotoolbox');
   assert.equal(encoder.args[encoder.args.indexOf('-q:v') + 1], '90');
   assert.equal(encoder.args[encoder.args.indexOf('-prio_speed') + 1], '0');
   assert.equal(encoder.args[encoder.args.indexOf('-allow_sw') + 1], '0');
   assert.equal(encoder.args[encoder.args.indexOf('-spatial_aq') + 1], '1');
 });
 
-test('known source bitrate cannot force VideoToolbox back into undershooting bitrate mode', (t) => {
+test('known source bitrate cannot force VideoToolbox back into undershooting bitrate mode', () => {
+  if (process.platform !== 'darwin') return;
   const encoder = videoEncoderArgs(TEST_FFMPEG, 'darwin', 90, { bitRate: 18_333_751 });
-  if (encoder.name !== 'h264_videotoolbox') return t.skip('VideoToolbox encoder unavailable');
+  assert.equal(encoder.name, 'hevc_videotoolbox');
   assert.equal(encoder.args[encoder.args.indexOf('-q:v') + 1], '90');
   assert.equal(encoder.args.includes('-b:v'), false);
   assert.equal(encoder.args.includes('-constant_bit_rate'), false);
@@ -208,12 +210,13 @@ test('Windows UI exposes detected encoder and CTT preset controls only on Window
   assert.match(renderer, /option\.disabled = !available\.has/);
 });
 
-test('HDR uses 10-bit HEVC VideoToolbox with preserved PQ color signaling', (t) => {
+test('HDR uses 10-bit HEVC VideoToolbox with preserved PQ color signaling', () => {
+  if (process.platform !== 'darwin') return;
   const encoder = videoEncoderArgs(TEST_FFMPEG, 'darwin', 90, {
     isHdr: true, colorRange: 'tv', colorSpace: 'bt2020nc',
     colorTransfer: 'smpte2084', colorPrimaries: 'bt2020',
   });
-  if (encoder.name !== 'hevc_videotoolbox') return t.skip('HEVC VideoToolbox encoder unavailable');
+  assert.equal(encoder.name, 'hevc_videotoolbox');
   assert.equal(encoder.args[encoder.args.indexOf('-profile:v') + 1], 'main10');
   assert.equal(encoder.args[encoder.args.indexOf('-pix_fmt') + 1], 'p010le');
   assert.equal(encoder.args[encoder.args.indexOf('-color_trc') + 1], 'smpte2084');
@@ -229,13 +232,14 @@ test('HDR export keeps a 10-bit pipeline across padding and libass', () => {
   assert.equal(filter, "pad=3840:2160:0:0:black,format=p010le,subtitles=filename='prepared.ass',format=p010le");
 });
 
-test('10-bit SDR anime uses HEVC Main10 and never an 8-bit filter path', (t) => {
+test('10-bit SDR anime uses HEVC Main10 and never an 8-bit filter path', () => {
+  if (process.platform !== 'darwin') return;
   const metadata = {
     isHdr: false, bitDepth: 10, colorRange: 'tv', colorSpace: 'bt709',
     colorTransfer: 'bt709', colorPrimaries: 'bt709',
   };
   const encoder = videoEncoderArgs(TEST_FFMPEG, 'darwin', 90, metadata);
-  if (encoder.name !== 'hevc_videotoolbox') return t.skip('HEVC VideoToolbox encoder unavailable');
+  assert.equal(encoder.name, 'hevc_videotoolbox');
   assert.equal(encoder.args[encoder.args.indexOf('-profile:v') + 1], 'main10');
   assert.equal(encoder.args[encoder.args.indexOf('-pix_fmt') + 1], 'p010le');
   assert.equal(encoder.hdr, false);
@@ -246,12 +250,13 @@ test('10-bit SDR anime uses HEVC Main10 and never an 8-bit filter path', (t) => 
   );
 });
 
-test('8-bit macOS sources use HEVC Main and direct CQ instead of H.264', (t) => {
+test('8-bit macOS sources use HEVC Main and direct CQ instead of H.264', () => {
+  if (process.platform !== 'darwin') return;
   const encoder = videoEncoderArgs(TEST_FFMPEG, 'darwin', 90, {
     isHdr: false, bitDepth: 8, colorRange: 'tv', colorSpace: 'bt709',
     colorTransfer: 'bt709', colorPrimaries: 'bt709',
   });
-  if (encoder.name !== 'hevc_videotoolbox') return t.skip('HEVC VideoToolbox encoder unavailable');
+  assert.equal(encoder.name, 'hevc_videotoolbox');
   assert.equal(encoder.args[encoder.args.indexOf('-profile:v') + 1], 'main');
   assert.equal(encoder.args[encoder.args.indexOf('-pix_fmt') + 1], 'yuv420p');
   assert.equal(encoder.args[encoder.args.indexOf('-q:v') + 1], '90');
