@@ -1,6 +1,6 @@
 {
   "name": "subtitle-burner",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Native Rust/Tauri IINA/libass-style subtitle burn-in tool",
   "author": "Local project",
   "license": "MIT",
