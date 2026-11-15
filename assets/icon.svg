@@ -1,16 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#151925"/>
-      <stop offset="1" stop-color="#090b10"/>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#343638"/>
+      <stop offset="1" stop-color="#111213"/>
     </linearGradient>
-    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#63a8ff"/>
-      <stop offset="1" stop-color="#2876ee"/>
+    <linearGradient id="letters" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d9c4ff"/>
+      <stop offset="0.52" stop-color="#9990ff"/>
+      <stop offset="1" stop-color="#7195ff"/>
     </linearGradient>
   </defs>
-  <rect x="52" y="52" width="920" height="920" rx="214" fill="url(#bg)"/>
-  <rect x="170" y="230" width="684" height="466" rx="92" fill="#050609" stroke="#394256" stroke-width="28"/>
-  <path d="M253 788h518" stroke="url(#blue)" stroke-width="54" stroke-linecap="round"/>
-  <text x="512" y="540" text-anchor="middle" font-family="Arial, sans-serif" font-size="236" font-weight="700" fill="#f7f9ff">CC</text>
+  <rect x="52" y="52" width="920" height="920" rx="250" fill="url(#tile)"/>
+  <text x="512" y="650" text-anchor="middle" font-family="SF Pro Rounded, Arial Rounded MT Bold, Arial, sans-serif" font-size="390" font-weight="700" letter-spacing="-24" fill="url(#letters)">CC</text>
 </svg>
