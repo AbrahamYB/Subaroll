@@ -1,4 +1,4 @@
-const api = window.subtitleBurner;
+const api = window.subaroll;
 const state = {
   videoPath: '', subtitlePath: '', outputPath: '', metadata: null,
   mode: 'subtitles', exporting: false, previewTimer: null, previewRequest: 0, videoEncoder: '', platform: '', availableVideoEncoders: [], availableAv1Encoders: [], renderedPreviewSettings: null, renderedPreviewLayout: null, subtitleTiming: null, subtitleWarning: '',
@@ -46,14 +46,17 @@ function settings() {
     windowsEncoder: elements.windowsEncoder.value, windowsPreset: elements.windowsPreset.value,
   };
 }
-const SETTINGS_KEY = 'subtitleBurner.subtitleSettings';
-const COMPRESSION_CODEC_KEY = 'subtitleBurner.compressionCodec';
+const SETTINGS_KEY = 'subaroll.subtitleSettings';
+const LEGACY_SETTINGS_KEY = 'subtitleBurner.subtitleSettings';
+const COMPRESSION_CODEC_KEY = 'subaroll.compressionCodec';
+const LEGACY_COMPRESSION_CODEC_KEY = 'subtitleBurner.compressionCodec';
 function saveSubtitleSettings() {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...settings(), settingsVersion: 4 }));
 }
 function restoreSubtitleSettings() {
   try {
-    const existing = localStorage.getItem(SETTINGS_KEY);
+    const currentSettings = localStorage.getItem(SETTINGS_KEY);
+    const existing = currentSettings || localStorage.getItem(LEGACY_SETTINGS_KEY);
     const legacyQuality = Number(localStorage.getItem('subtitleBurner.encodingQuality'));
     const saved = existing ? JSON.parse(existing) : {
       delaySeconds: 0,
@@ -70,7 +73,7 @@ function restoreSubtitleSettings() {
     if (Number.isFinite(saved.quality)) elements.quality.value = String(Math.max(60, Math.min(100, saved.quality)));
     if (['auto', 'nvenc', 'amf', 'qsv', 'software'].includes(saved.windowsEncoder)) elements.windowsEncoder.value = saved.windowsEncoder;
     if (['quality', 'balanced', 'fast'].includes(saved.windowsPreset)) elements.windowsPreset.value = saved.windowsPreset;
-    if (!existing) saveSubtitleSettings();
+    if (!currentSettings) saveSubtitleSettings();
   } catch (_) {}
   const position = Number(elements.position.value);
   elements.delayValue.textContent = `${Number(elements.delay.value).toFixed(2)} s`;
@@ -155,8 +158,9 @@ async function checkTools() {
     state.availableAv1Encoders = result.availableAv1Encoders || [];
     const av1Option = elements.compressionCodec.querySelector('option[value="av1"]');
     av1Option.disabled = state.availableAv1Encoders.length === 0;
-    const savedCodec = localStorage.getItem(COMPRESSION_CODEC_KEY);
+    const savedCodec = localStorage.getItem(COMPRESSION_CODEC_KEY) || localStorage.getItem(LEGACY_COMPRESSION_CODEC_KEY);
     if (['auto', 'av1', 'h264'].includes(savedCodec)) elements.compressionCodec.value = savedCodec;
+    if (savedCodec && !localStorage.getItem(COMPRESSION_CODEC_KEY)) localStorage.setItem(COMPRESSION_CODEC_KEY, savedCodec);
     if (elements.compressionCodec.selectedOptions[0]?.disabled) elements.compressionCodec.value = 'auto';
     const av1Labels = { nvenc: 'NVIDIA NVENC', qsv: 'Intel Quick Sync', amf: 'AMD AMF' };
     elements.compressionCodecHint.textContent = state.availableAv1Encoders.length

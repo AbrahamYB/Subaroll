@@ -1,4 +1,4 @@
-# Subtitle Burner
+# Subaroll
 
 A lightweight Rust/Tauri macOS and Windows tool for permanently burning text subtitles into video with FFmpeg and libass—the same subtitle-rendering family used by mpv/IINA.
 
@@ -24,7 +24,7 @@ The app automatically prefers Homebrew's `ffmpeg-full` on macOS. If FFmpeg is el
 
 ## Install a release
 
-- **macOS 11 or newer, Apple silicon only:** download the ARM64 `.dmg`, drag **Subtitle Burner** into Applications, then right-click the app and choose **Open** the first time. Install the media engine once with `brew install ffmpeg-full`.
+- **macOS 11 or newer, Apple silicon only:** download the ARM64 `.dmg`, drag **Subaroll** into Applications, then right-click the app and choose **Open** the first time. Install the media engine once with `brew install ffmpeg-full`.
 - **Windows 11 x64:** download the `setup.exe` from GitHub Releases and run it. The installer includes the tested FFmpeg/FFprobe build, so no separate media-tool installation is required. Until the project has a paid code-signing certificate, Windows SmartScreen may require **More info → Run anyway**.
 
 Release builds are created natively by GitHub Actions: ARM64 on macOS and x64 on Windows 11. No Electron runtime is included.
@@ -48,6 +48,6 @@ The native bundles are written below `src-tauri/target/release/bundle/`. The pub
 The target-size video compression feature is based on the workflow and design of
 [vladaad's DiscordCompressor](https://github.com/vladaad/discordcompressor), an
 AGPL-3.0 project that compresses video to a chosen file-size target with FFmpeg.
-Subtitle Burner's compression implementation is independently written in Rust,
+Subaroll's compression implementation is independently written in Rust,
 with full credit to vladaad for the original compression approach and reference
 workflow.

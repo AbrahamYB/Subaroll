@@ -295,7 +295,7 @@ fn find_tools(custom: Option<String>) -> Option<Tools> {
             candidates.push(value);
         }
     }
-    if let Ok(value) = std::env::var("SUBTITLE_BURNER_FFMPEG") {
+    if let Ok(value) = std::env::var("SUBAROLL_FFMPEG").or_else(|_| std::env::var("SUBTITLE_BURNER_FFMPEG")) {
         candidates.push(value);
     }
     #[cfg(target_os = "macos")]
@@ -865,7 +865,7 @@ fn prepare_subtitle(
     settings: &SubtitleSettings,
 ) -> Result<Prepared, String> {
     let dir = tempfile::Builder::new()
-        .prefix("SubtitleBurner-")
+        .prefix("Subaroll-")
         .tempdir()
         .map_err(|e| e.to_string())?;
     let converted = dir.path().join("source.ass");
@@ -1852,7 +1852,7 @@ pub async fn start_compression(
             plan.output_fps = output_fps;
         }
         let dir = tempfile::Builder::new()
-            .prefix("SubtitleBurnerCompress-")
+            .prefix("SubarollCompress-")
             .tempdir()
             .map_err(|e| e.to_string())?;
         let pass = dir.path().join("pass");

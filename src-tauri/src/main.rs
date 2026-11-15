@@ -1,3 +1,3 @@
 fn main() {
-    subtitle_burner_lib::run();
+    subaroll_lib::run();
 }

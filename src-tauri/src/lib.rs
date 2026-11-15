@@ -28,5 +28,5 @@ pub fn run() {
             media::reveal_output,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Subtitle Burner");
+        .expect("error while running Subaroll");
 }

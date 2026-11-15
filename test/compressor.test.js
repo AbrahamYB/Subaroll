@@ -90,7 +90,7 @@ test('window has a drag region and viewport-locked responsive layout', () => {
   assert.doesNotMatch(css, /@media \(max-height:/);
 });
 
-test('window remains stable while zoom stays locked at a stable 100%', () => {
+test('window remains stable and the installed app bundle updates in place', () => {
   const config = fs.readFileSync(path.join(__dirname, '..', 'src-tauri', 'tauri.conf.json'), 'utf8');
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
   const updater = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'update-installed-mac.sh'), 'utf8');
@@ -101,7 +101,9 @@ test('window remains stable while zoom stays locked at a stable 100%', () => {
   assert.doesNotMatch(renderer, /api\.fitWindow/);
   assert.doesNotMatch(renderer, /ResizeObserver/);
   assert.match(updater, /npm run build:mac/);
-  assert.match(updater, /rm -rf "\$installed_app"/);
+  assert.match(updater, /rm -rf "\$installed_app\/Contents"/);
+  assert.match(updater, /ditto "\$built_app\/Contents" "\$installed_app\/Contents"/);
+  assert.match(updater, /legacy_app="\/Applications\/Subtitle Burner\.app"/);
 });
 
 test('macOS app permits only one main instance', () => {

@@ -1,12 +1,12 @@
 [package]
-name = "subtitle-burner"
+name = "subaroll"
 version = "1.1.0"
 description = "Native subtitle burn-in and Discord compression tool"
 authors = ["Local project"]
 edition = "2021"
 
 [lib]
-name = "subtitle_burner_lib"
+name = "subaroll_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

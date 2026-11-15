@@ -1,4 +1,4 @@
-name: Release native apps
+name: Release Subaroll apps
 
 on:
   push:
@@ -60,10 +60,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
-          releaseName: Subtitle Burner v__VERSION__
+          releaseName: Subaroll v__VERSION__
           releaseBody: |
-            Native Rust/Tauri release—no Electron runtime.
-
             **macOS:** Apple silicon only (M1 or newer), macOS 11+. Download the ARM64 DMG, drag the app to Applications, then right-click → Open on first launch. Requires `brew install ffmpeg-full`.
 
             **Windows:** Windows 11 x64. Download the setup EXE (recommended) or MSI and run it. FFmpeg and FFprobe are included. If SmartScreen appears, choose More info → Run anyway.

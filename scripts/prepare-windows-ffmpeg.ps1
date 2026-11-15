@@ -3,8 +3,8 @@ $ErrorActionPreference = "Stop"
 $archiveUrl = "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/autobuild-2026-11-14-12-37/ffmpeg-N-128909-g604ef3784d-win64-gpl.zip"
 $expectedSha256 = "1adf262a8238d059a3a6e1949f026ba4b071bfa29b2399af53557cbc63008658"
 $temporaryRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
-$archive = Join-Path $temporaryRoot "subtitle-burner-ffmpeg.zip"
-$expanded = Join-Path $temporaryRoot "subtitle-burner-ffmpeg"
+$archive = Join-Path $temporaryRoot "subaroll-ffmpeg.zip"
+$expanded = Join-Path $temporaryRoot "subaroll-ffmpeg"
 $destination = Join-Path $PSScriptRoot "..\src-tauri\binaries"
 
 Invoke-WebRequest -Uri $archiveUrl -OutFile $archive

@@ -1,7 +1,7 @@
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
-window.subtitleBurner = {
+window.subaroll = {
   toolStatus: () => invoke('tool_status'),
   chooseFfmpeg: () => invoke('choose_ffmpeg'),
   chooseVideo: () => invoke('choose_video'),
