@@ -19,6 +19,9 @@ test('release workflow builds only Apple-silicon macOS and Windows 11 x64', () =
   const nodeTestRunner = fs.readFileSync(path.join(root, 'scripts', 'run-node-tests.js'), 'utf8');
   assert.match(nodeTestRunner, /failed\?\.\[1\] === '0'/);
   assert.match(nodeTestRunner, /cancelled\?\.\[1\] === '0'/);
+  const cargoRunner = fs.readFileSync(path.join(root, 'scripts', 'run-cargo.js'), 'utf8');
+  assert.match(cargoRunner, /process\.env\.CARGO_HOME/);
+  assert.match(cargoRunner, /candidates\.find/);
 });
 
 test('Windows release bundles a checksum-pinned FFmpeg with libass', () => {
