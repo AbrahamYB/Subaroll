@@ -4,6 +4,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { transformAss, subtitleFilter, parseProgressLine, parseFrameRate, parseRatio, previewTimestamp, videoEncoderArgs, sourceAwareBitrateArgs, activeSubtitleLineCount, automaticCanvas, exportVideoFilter, previewFrameFilter } = require('../lib/burner');
 
+const TEST_FFMPEG = [
+  '/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg',
+  '/opt/homebrew/bin/ffmpeg',
+  '/usr/local/bin/ffmpeg',
+].find(candidate => fs.existsSync(candidate)) || 'ffmpeg';
+
 const ASS = `[Script Info]
 PlayResX: 1280
 PlayResY: 720
@@ -156,7 +162,7 @@ test('non-macOS builds retain the portable software encoder', () => {
 });
 
 test('macOS hardware encoder uses the high-quality VideoToolbox recipe when available', (t) => {
-  const encoder = videoEncoderArgs('/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg', 'darwin');
+  const encoder = videoEncoderArgs(TEST_FFMPEG, 'darwin');
   if (encoder.name !== 'h264_videotoolbox') return t.skip('VideoToolbox encoder unavailable');
   assert.equal(encoder.args[encoder.args.indexOf('-q:v') + 1], '90');
   assert.equal(encoder.args[encoder.args.indexOf('-prio_speed') + 1], '0');
@@ -165,7 +171,7 @@ test('macOS hardware encoder uses the high-quality VideoToolbox recipe when avai
 });
 
 test('known source bitrate cannot force VideoToolbox back into undershooting bitrate mode', (t) => {
-  const encoder = videoEncoderArgs('/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg', 'darwin', 90, { bitRate: 18_333_751 });
+  const encoder = videoEncoderArgs(TEST_FFMPEG, 'darwin', 90, { bitRate: 18_333_751 });
   if (encoder.name !== 'h264_videotoolbox') return t.skip('VideoToolbox encoder unavailable');
   assert.equal(encoder.args[encoder.args.indexOf('-q:v') + 1], '90');
   assert.equal(encoder.args.includes('-b:v'), false);
@@ -203,7 +209,7 @@ test('Windows UI exposes detected encoder and CTT preset controls only on Window
 });
 
 test('HDR uses 10-bit HEVC VideoToolbox with preserved PQ color signaling', (t) => {
-  const encoder = videoEncoderArgs('/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg', 'darwin', 90, {
+  const encoder = videoEncoderArgs(TEST_FFMPEG, 'darwin', 90, {
     isHdr: true, colorRange: 'tv', colorSpace: 'bt2020nc',
     colorTransfer: 'smpte2084', colorPrimaries: 'bt2020',
   });
@@ -228,7 +234,7 @@ test('10-bit SDR anime uses HEVC Main10 and never an 8-bit filter path', (t) => 
     isHdr: false, bitDepth: 10, colorRange: 'tv', colorSpace: 'bt709',
     colorTransfer: 'bt709', colorPrimaries: 'bt709',
   };
-  const encoder = videoEncoderArgs('/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg', 'darwin', 90, metadata);
+  const encoder = videoEncoderArgs(TEST_FFMPEG, 'darwin', 90, metadata);
   if (encoder.name !== 'hevc_videotoolbox') return t.skip('HEVC VideoToolbox encoder unavailable');
   assert.equal(encoder.args[encoder.args.indexOf('-profile:v') + 1], 'main10');
   assert.equal(encoder.args[encoder.args.indexOf('-pix_fmt') + 1], 'p010le');
@@ -241,7 +247,7 @@ test('10-bit SDR anime uses HEVC Main10 and never an 8-bit filter path', (t) => 
 });
 
 test('8-bit macOS sources use HEVC Main and direct CQ instead of H.264', (t) => {
-  const encoder = videoEncoderArgs('/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg', 'darwin', 90, {
+  const encoder = videoEncoderArgs(TEST_FFMPEG, 'darwin', 90, {
     isHdr: false, bitDepth: 8, colorRange: 'tv', colorSpace: 'bt709',
     colorTransfer: 'bt709', colorPrimaries: 'bt709',
   });

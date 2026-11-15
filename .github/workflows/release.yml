@@ -46,6 +46,11 @@ jobs:
         shell: powershell
         run: npm run prepare:ffmpeg:win
 
+      - name: Provide FFmpeg for macOS tests
+        if: runner.os == 'macOS'
+        shell: bash
+        run: command -v ffmpeg >/dev/null || brew install ffmpeg
+
       - name: Run automated tests
         run: npm test
 
