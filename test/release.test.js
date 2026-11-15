@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const root = path.join(__dirname, '..');
+const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 
 test('release workflow builds only Apple-silicon macOS and Windows 11 x64', () => {
   const workflow = fs.readFileSync(path.join(root, '.github', 'workflows', 'release.yml'), 'utf8');
@@ -14,6 +15,7 @@ test('release workflow builds only Apple-silicon macOS and Windows 11 x64', () =
   assert.match(workflow, /--bundles dmg/);
   assert.match(workflow, /--bundles nsis,msi/);
   assert.match(workflow, /node-version: 26/);
+  assert.match(packageJson.scripts.test, /--test-force-exit/);
 });
 
 test('Windows release bundles a checksum-pinned FFmpeg with libass', () => {
