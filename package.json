@@ -6,7 +6,7 @@
   "license": "MIT",
   "scripts": {
     "start": "node scripts/run-tauri.js dev",
-    "test": "node --test --test-isolation=none --test-force-exit test/*.test.js && node scripts/run-cargo.js test --manifest-path src-tauri/Cargo.toml",
+    "test": "node scripts/run-node-tests.js && node scripts/run-cargo.js test --manifest-path src-tauri/Cargo.toml",
     "build:mac": "node scripts/run-tauri.js build --bundles app",
     "build:win": "node scripts/run-tauri.js build --bundles nsis",
     "prepare:ffmpeg:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-windows-ffmpeg.ps1",
