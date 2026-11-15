@@ -42,3 +42,12 @@ The native bundles are written below `src-tauri/target/release/bundle/`. The pub
 - Target-size compression automatically chooses output bitrate and resolution. On Windows, Auto prefers a usable hardware AV1 encoder (NVIDIA NVENC, Intel Quick Sync, then AMD AMF), with an explicit H.264 compatibility option. NVIDIA uses CQP 20 and allows one calculated QP correction pass if the result exceeds the selected size. Unavailable hardware falls back through H.264 hardware and then adaptive CPU x264 two-pass encoding.
 - GPU recipes are initialized at the intended output resolution before an export begins, so an encoder merely appearing in FFmpeg's list is not treated as usable.
 - MP4 output uses AAC audio for compatibility. Metadata and chapters are retained where the output container supports them.
+
+## Credits
+
+The target-size video compression feature is based on the workflow and design of
+[vladaad's DiscordCompressor](https://github.com/vladaad/discordcompressor), an
+AGPL-3.0 project that compresses video to a chosen file-size target with FFmpeg.
+Subtitle Burner's compression implementation is independently written in Rust,
+with full credit to vladaad for the original compression approach and reference
+workflow.

@@ -1,5 +1,16 @@
 # Third-party notices
 
+## DiscordCompressor credit
+
+Subtitle Burner's target-size compression feature is based on the workflow and
+design of [vladaad's DiscordCompressor](https://github.com/vladaad/discordcompressor),
+with full credit to vladaad for the original compression approach.
+DiscordCompressor is licensed under the GNU Affero General Public License v3.0.
+Subtitle Burner does not bundle the DiscordCompressor executable or its Go
+source code; its compression implementation is independently written in Rust.
+
+## FFmpeg
+
 The Windows release bundles `ffmpeg.exe` and `ffprobe.exe` from the pinned
 [BtbN FFmpeg GPL build](https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-11-14-12-37),
 archive `ffmpeg-N-128909-g604ef3784d-win64-gpl.zip`, SHA-256
