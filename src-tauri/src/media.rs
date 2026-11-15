@@ -185,6 +185,7 @@ pub struct CompressionPlan {
     video_bitrate: u64,
     audio_bitrate: u64,
     output_height: u64,
+    output_fps: f64,
 }
 
 fn command_ok(command: &str, args: &[&str]) -> bool {
@@ -1609,39 +1610,57 @@ fn compression_plan(m: &MediaMetadata, mb: f64) -> CompressionPlan {
         64_000
     };
     let video = total.saturating_sub(audio).max(120_000);
-    let max_h = compression_output_height(video, false);
+    let (max_h, output_fps) = compression_geometry(video, false, fps(&m.fps));
     CompressionPlan {
         target_bytes: target,
         total_bitrate: total,
         video_bitrate: video,
         audio_bitrate: audio,
         output_height: m.height.min(max_h),
+        output_fps,
     }
 }
 
-fn compression_output_height(video_bitrate: u64, av1: bool) -> u64 {
+fn compression_height_for_bitrate(video_bitrate: u64, av1: bool) -> u64 {
     if av1 {
-        if video_bitrate >= 3_000_000 {
+        if video_bitrate >= 1_200_000 {
             1080
-        } else if video_bitrate >= 2_000_000 {
+        } else if video_bitrate >= 750_000 {
             900
-        } else if video_bitrate >= 1_000_000 {
+        } else if video_bitrate >= 400_000 {
             720
-        } else if video_bitrate >= 600_000 {
+        } else if video_bitrate >= 250_000 {
             540
         } else {
             480
         }
-    } else if video_bitrate >= 5_000_000 {
+    // Two-pass x264 remains useful at 1080p around 2 Mbps. Keep source detail
+    // until the actual file-size budget makes a lower resolution necessary.
+    } else if video_bitrate >= 2_000_000 {
         1080
-    } else if video_bitrate >= 3_000_000 {
+    } else if video_bitrate >= 1_200_000 {
         900
-    } else if video_bitrate >= 1_500_000 {
+    } else if video_bitrate >= 650_000 {
         720
-    } else if video_bitrate >= 800_000 {
+    } else if video_bitrate >= 350_000 {
         540
     } else {
         480
+    }
+}
+
+fn compression_geometry(video_bitrate: u64, av1: bool, source_fps: f64) -> (u64, f64) {
+    let source_fps = source_fps.max(1.0);
+    let rate_at_source_fps = (video_bitrate as f64 * (30.0 / source_fps).min(1.0)).round() as u64;
+    let height_at_source_fps = compression_height_for_bitrate(rate_at_source_fps, av1);
+    if source_fps > 30.0 && height_at_source_fps < 720 {
+        let reduced_fps = (source_fps / 2.0).min(30.0);
+        (
+            compression_height_for_bitrate(video_bitrate, av1),
+            reduced_fps,
+        )
+    } else {
+        (height_at_source_fps, source_fps)
     }
 }
 
@@ -1827,9 +1846,10 @@ pub async fn start_compression(
             &input.codec_preference,
         );
         if encoder.name.starts_with("av1_") {
-            plan.output_height = m
-                .height
-                .min(compression_output_height(plan.video_bitrate, true));
+            let (max_height, output_fps) =
+                compression_geometry(plan.video_bitrate, true, fps(&m.fps));
+            plan.output_height = m.height.min(max_height);
+            plan.output_fps = output_fps;
         }
         let dir = tempfile::Builder::new()
             .prefix("SubtitleBurnerCompress-")
@@ -1851,6 +1871,9 @@ pub async fn start_compression(
         }
         if plan.output_height < m.height {
             filters.push(format!("scale=-2:{}:flags=lanczos", plan.output_height))
+        }
+        if plan.output_fps < fps(&m.fps) - 0.01 {
+            filters.push(format!("fps={}", fmt(plan.output_fps)))
         }
         filters.push("format=yuv420p".into());
         let mut common = vec![
@@ -2122,13 +2145,17 @@ mod tests {
 
     #[test]
     fn av1_keeps_more_resolution_at_discord_bitrates_without_upscaling() {
-        assert_eq!(compression_output_height(3_200_000, false), 900);
-        assert_eq!(compression_output_height(3_200_000, true), 1080);
-        assert_eq!(compression_output_height(1_100_000, false), 540);
-        assert_eq!(compression_output_height(1_100_000, true), 720);
+        assert_eq!(compression_height_for_bitrate(3_200_000, false), 1080);
+        assert_eq!(compression_height_for_bitrate(3_200_000, true), 1080);
+        assert_eq!(compression_height_for_bitrate(2_287_919, false), 1080);
+        assert_eq!(compression_height_for_bitrate(1_100_000, false), 720);
+        assert_eq!(compression_height_for_bitrate(1_100_000, true), 900);
+        assert_eq!(compression_geometry(2_287_919, false, 30.0), (1080, 30.0));
+        assert_eq!(compression_geometry(2_287_919, false, 60.0), (720, 60.0));
+        assert_eq!(compression_geometry(1_100_000, false, 60.0), (720, 30.0));
         let source_height = 480;
         assert_eq!(
-            source_height.min(compression_output_height(8_000_000, true)),
+            source_height.min(compression_height_for_bitrate(8_000_000, true)),
             480
         );
     }

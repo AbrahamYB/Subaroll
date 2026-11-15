@@ -8,8 +8,29 @@ test('compression plan reserves overhead and audio under the target size', () =>
   const plan = compressionPlan({ duration: 60, width: 1920, height: 1080 }, 25);
   assert.ok(plan.videoBitrate > 3_000_000);
   assert.equal(plan.audioBitrate, 128_000);
-  assert.equal(plan.outputHeight, 900);
+  assert.equal(plan.outputHeight, 1080);
   assert.ok((plan.totalBitrate * 60 / 8) < 25 * 1024 * 1024);
+});
+
+test('a usable 1080p bitrate does not trigger a premature downscale', () => {
+  const plan = compressionPlan({ duration: 10, width: 1920, height: 1080, fps: '30/1' }, 3);
+  assert.ok(plan.videoBitrate > 2_000_000);
+  assert.equal(plan.outputHeight, 1080);
+  assert.equal(plan.outputFps, 30);
+  assert.doesNotMatch(videoFilters({ isHdr: false, height: 1080 }, plan), /scale=/);
+  assert.doesNotMatch(videoFilters({ isHdr: false, height: 1080 }, plan), /fps=/);
+});
+
+test('60 fps is preserved through 720p and reduced only when that budget is impossible', () => {
+  const preserve = compressionPlan({ duration: 10, width: 1920, height: 1080, fps: '60/1' }, 3);
+  assert.equal(preserve.outputHeight, 720);
+  assert.equal(preserve.outputFps, 60);
+  assert.doesNotMatch(videoFilters({ isHdr: false, height: 1080, fps: '60/1' }, preserve), /fps=/);
+
+  const constrained = compressionPlan({ duration: 10, width: 1920, height: 1080, fps: '60/1' }, 1.5);
+  assert.equal(constrained.outputHeight, 720);
+  assert.equal(constrained.outputFps, 30);
+  assert.match(videoFilters({ isHdr: false, height: 1080, fps: '60/1' }, constrained), /fps=30/);
 });
 
 test('low bitrate targets automatically lower resolution without upscaling', () => {
