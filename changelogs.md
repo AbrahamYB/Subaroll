@@ -1,27 +1,6 @@
 # Changelogs
 
-Release history for Subaroll. Versions are shown using the public release names (`v1.0`, `v1.1`, `v1.2`).
-
-## v1.2
-
-### In-app updates
-
-- Added update checks when Subaroll opens on macOS and Windows.
-- Added an in-app action to download, verify, and install an available update, then restart the app.
-- Update packages are verified using Subaroll's embedded public key before installation.
-- Windows updates install in passive mode.
-- Published signed updater bundles and a `latest.json` manifest for macOS ARM64 and Windows 11 x64.
-- The v1.1 app must be replaced manually once with v1.2 because it predates the updater. Later updates can be installed from inside the app.
-
-### macOS first launch
-
-- Added guidance for opening the unsigned, non-notarized macOS build after moving it to Applications, including an app-specific quarantine-removal command for users who choose to use it.
-
-### Release pipeline
-
-- Kept the public release name and tag in the short `v1.2` format while using valid `1.2.0` SemVer metadata inside the app and its installer filenames.
-- Built the macOS release for Apple silicon and the Windows release for Windows 11 x64.
-- Included the macOS updater app archive alongside the DMG and Windows updater signatures alongside the installers.
+Release history for Subaroll. Public releases use the `major.minor` format (`v1.0`, `v1.1`).
 
 ## v1.1
 
@@ -43,6 +22,9 @@ Release history for Subaroll. Versions are shown using the public release names 
 - Added native release builds for Apple silicon macOS and Windows 11 x64, with automated release checks for the platform-specific build paths.
 - Improved the test runner so reported failures fail the release checks, and made Cargo discovery use the configured Rust toolchain.
 - Documented the independent Rust compression implementation's relationship to vladaad's DiscordCompressor. The project credits its compression workflow and design as the reference; it does not embed the upstream compressor binary.
+- Added signed in-app updates for macOS and Windows. Subaroll checks GitHub Releases on launch, verifies updates with its embedded public key, and can install an available update from the app. Windows installs updates in passive mode. The earlier v1.1 installers need a one-time manual replacement with this updater-enabled build.
+- Added macOS first-launch guidance for the unsigned, non-notarized app, including the app-specific quarantine-removal command.
+- Published signed updater packages and a `latest.json` manifest for Apple silicon macOS and Windows 11 x64. Release and download names use `major.minor`; updater metadata retains the valid internal SemVer needed for version comparisons.
 
 ## v1.0
 

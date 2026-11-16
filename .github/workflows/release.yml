@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing short release tag to build or update, such as v1.2
+        description: Existing short release tag to build or update, such as v1.1
         required: true
         type: string
 
@@ -59,6 +59,13 @@ jobs:
       - name: Run automated tests
         run: npm test
 
+      - name: Derive major.minor asset version from release tag
+        id: release_version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: echo "short=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+
       - name: Build and publish native installer
         uses: tauri-apps/tauri-action@v1
         env:
@@ -68,9 +75,15 @@ jobs:
         with:
           tagName: ${{ inputs.release_tag || github.ref_name }}
           releaseName: Subaroll ${{ inputs.release_tag || github.ref_name }}
-          generateReleaseNotes: true
+          releaseBody: |
+            Consolidated Subaroll v1.1 release for Apple silicon macOS and Windows 11 x64.
+
+            Includes subtitle burn-in, target-size compression, and signed in-app updates. Full release details are in [changelogs.md](https://github.com/AbrahamYB/Subaroll/blob/main/changelogs.md).
+
+            Download the installer for your platform from the assets below.
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true
+          releaseAssetNamePattern: "[name]_${{ steps.release_version.outputs.short }}_[arch][setup][ext]"
           args: ${{ matrix.args }}
