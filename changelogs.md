@@ -4,6 +4,15 @@ Release history for Subaroll. Public releases use the `major.minor` format (`v1.
 
 ## v1.1
 
+**Summary:** Better bitrate-to-resolution and frame-rate planning for target-size compression; Windows AV1/NVIDIA/AMD/Intel encoder options; Subaroll name and CC icon; more reliable native release builds; and signed in-app updates for macOS and Windows. All updates previously published separately as v1.2 are included in this consolidated v1.1 release.
+
+### Consolidated release packaging
+
+- Updated the existing `v1.1` release with the current macOS ARM64 and Windows 11 x64 builds instead of creating a new release.
+- Kept the public release tag and download filenames in `major.minor` form, such as `v1.1` and `Subaroll_1.1_aarch64.dmg`.
+- Added signed updater bundles and signatures, plus `latest.json` entries for macOS ARM64 and Windows x64.
+- Removed the separate v1.2 release and tag after verifying the consolidated v1.1 assets and updater manifest.
+
 ### Compression behavior
 
 - Refined target-size planning so the encoder makes better use of the available bitrate before reducing picture resolution.
