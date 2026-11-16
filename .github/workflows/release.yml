@@ -3,8 +3,7 @@ name: Release Subaroll apps
 on:
   push:
     tags:
-      - "v1.1"
-  workflow_dispatch:
+      - "v*"
 
 permissions:
   contents: write
@@ -58,39 +57,14 @@ jobs:
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: v1.1
-          releaseName: Subaroll v1.1
-          releaseBody: |
-            # Subaroll 1.1
-
-            ## Changes since 1.0
-
-            ### Discord compression keeps more of the source video
-
-            The 1.0 bitrate thresholds could lower resolution before the selected size limit required it. The planner now keeps 1080p H.264 when its video budget is at least 2 Mbps at 30 fps, and chooses lower resolutions only as the budget falls. AV1 uses its own thresholds. The planner never upscales a source.
-
-            Frame rate is now part of that decision. A 60 fps source stays at 60 fps when the budget can support at least 720p. When it cannot, the planner reduces frame rate to 30 fps and recalculates the best resolution for the remaining bitrate.
-
-            ### App name and icon
-
-            The product, window, installer, and repository are now named **Subaroll**. The CC icon is updated for the macOS and Windows app bundles. The macOS bundle identifier remains unchanged so existing preferences are retained.
-
-            ### Build and release reliability
-
-            The CI test runner now checks reported test failures and resolves Cargo using the configured Rust toolchain. Native release packages are built for Apple silicon macOS and Windows 11 x64.
-
-            ## Downloads
-
-            - **macOS 11+, Apple silicon (M1 or newer):** ARM64 DMG. Drag Subaroll into Applications; right-click → Open on first launch. Requires `brew install ffmpeg-full`.
-            - **Windows 11 x64:** Setup EXE (recommended) or MSI. FFmpeg and FFprobe are included.
-
-            Installers are unsigned and not notarized. Windows SmartScreen may ask you to select **More info → Run anyway**.
-
-            ## Compression credit
-
-            Subaroll's target-size compressor is independently written in Rust and is based on the workflow and design of [vladaad's DiscordCompressor](https://github.com/vladaad/discordcompressor). Full credit to vladaad for the original compression approach. No upstream compressor binary is embedded.
+          tagName: ${{ github.ref_name }}
+          releaseName: Subaroll ${{ github.ref_name }}
+          generateReleaseNotes: true
           releaseDraft: false
           prerelease: false
-          uploadUpdaterJson: false
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true
           args: ${{ matrix.args }}

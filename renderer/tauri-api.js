@@ -14,6 +14,8 @@ window.subaroll = {
   startCompression: input => invoke('start_compression', { input }),
   cancelExport: () => invoke('cancel_export'),
   revealOutput: outputPath => invoke('reveal_output', { outputPath }),
+  checkForUpdate: () => invoke('check_for_update'),
+  installUpdate: () => invoke('install_update'),
   fitWindow: () => {},
   filePath: file => file?.path || '',
   onProgress: callback => { listen('export-progress', event => callback(event.payload)); },

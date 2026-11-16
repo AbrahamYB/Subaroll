@@ -28,12 +28,32 @@ Subaroll burns external subtitle files into video or compresses video to a chose
 - **Compression attribution is documented.** The compressor is an independent Rust implementation based on the workflow and design of [vladaad's DiscordCompressor](https://github.com/vladaad/discordcompressor); no upstream compressor binary is embedded.
 - **Release checks are more reliable.** The release test runner now fails on reported test failures and resolves Cargo through the configured Rust toolchain. The 1.1 packages are built for Apple silicon and Windows 11 x64.
 
-## Install 1.1
+## Changes in 1.2 since 1.1
 
-- **macOS 11 or newer, Apple silicon only (M1 or newer):** download [Subaroll 1.1 for macOS](https://github.com/AbrahamYB/Subaroll/releases/download/v1.1/Subaroll_1.1_aarch64.dmg), drag Subaroll into Applications, then right-click the app and choose **Open** on first launch. Install FFmpeg once with `brew install ffmpeg-full`.
-- **Windows 11 x64:** download the [setup EXE](https://github.com/AbrahamYB/Subaroll/releases/download/v1.1/Subaroll_1.1_x64-setup.exe) (recommended) or [MSI installer](https://github.com/AbrahamYB/Subaroll/releases/download/v1.1/Subaroll_1.1_x64_en-US.msi). FFmpeg and FFprobe are included. If SmartScreen appears, choose **More info → Run anyway**.
+- **In-app updates.** Subaroll checks for signed updates at launch and can download, verify, and install updates from GitHub Releases. The first updater-enabled installer must be installed manually; later updates can be installed inside the app.
+- **macOS first launch help.** Added the quarantine-removal command for users who choose to run the unsigned, non-notarized app.
+- **Release workflow.** macOS ARM64 and Windows 11 x64 release builds include signed updater artifacts and publish `latest.json`. Public release tags remain short (for example, `v1.2`); app versions remain valid SemVer internally.
+
+## Install 1.2
+
+- **macOS 11 or newer, Apple silicon only (M1 or newer):** download [Subaroll 1.2 for macOS](https://github.com/AbrahamYB/Subaroll/releases/download/v1.2/Subaroll_1.2_aarch64.dmg), drag Subaroll into Applications, then right-click the app and choose **Open** on first launch. Install FFmpeg once with `brew install ffmpeg-full`.
+- **Windows 11 x64:** download the [setup EXE](https://github.com/AbrahamYB/Subaroll/releases/download/v1.2/Subaroll_1.2_x64-setup.exe) (recommended) or [MSI installer](https://github.com/AbrahamYB/Subaroll/releases/download/v1.2/Subaroll_1.2_x64_en-US.msi). FFmpeg and FFprobe are included. If SmartScreen appears, choose **More info → Run anyway**.
 
 The release installers are unsigned and not notarized. Windows release packages include the pinned FFmpeg build documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## App updates
+
+Subaroll 1.2 checks GitHub Releases when it opens. When a signed update is available, select **Install v…** in the status row; the app downloads and installs it, then restarts. Windows installs the update in passive mode. Updates are verified with Subaroll's embedded public key before installation. The v1.1 installers predate the updater and need to be replaced once with v1.2; subsequent releases can be installed in the app.
+
+### macOS first launch
+
+If macOS still blocks the unsigned, non-notarized app after moving it to Applications, open Terminal and run:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Subaroll.app"
+```
+
+Then open Subaroll from Applications. This removes the quarantine attribute from that app bundle only.
 
 ## Run from source
 

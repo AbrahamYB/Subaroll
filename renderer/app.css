@@ -70,7 +70,10 @@ input[type="range"] { width: 100%; height: 18px; margin: 0; accent-color: var(--
 .progress-copy { display: flex; justify-content: space-between; color: #bdc2ce; font-size: 11px; }
 .progress-track { overflow: hidden; height: 7px; margin-top: 7px; border-radius: 99px; background: #0c0e13; }
 .progress-track div { width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #2879ed, #69a8ff); transition: width .15s; }
-.status { min-height: 30px; margin: 12px 2px 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.status-row { display: flex; align-items: flex-start; gap: 8px; margin: 12px 2px 0; }
+.status { flex: 1; min-width: 0; min-height: 30px; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.update-button { flex: none; border: 0; padding: 2px 0; background: transparent; color: #8fbaff; font-size: 10px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+.update-button:disabled { opacity: .6; cursor: default; }
 .status.error { color: #ffabab; }
 .status.success { color: #91e6b5; cursor: pointer; }
 [hidden] { display: none !important; }

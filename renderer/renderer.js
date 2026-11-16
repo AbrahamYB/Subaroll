@@ -2,6 +2,7 @@ const api = window.subaroll;
 const state = {
   videoPath: '', subtitlePath: '', outputPath: '', metadata: null,
   mode: 'subtitles', exporting: false, previewTimer: null, previewRequest: 0, videoEncoder: '', platform: '', availableVideoEncoders: [], availableAv1Encoders: [], renderedPreviewSettings: null, renderedPreviewLayout: null, subtitleTiming: null, subtitleWarning: '',
+  availableUpdate: null, updateBusy: false,
 };
 
 const $ = id => document.getElementById(id);
@@ -21,6 +22,7 @@ const elements = {
   targetDown: $('targetDown'), targetUp: $('targetUp'),
   compressionCodec: $('compressionCodec'), compressionCodecHint: $('compressionCodecHint'),
   modeEyebrow: $('modeEyebrow'), modeTitle: $('modeTitle'),
+  updateButton: $('updateButton'),
 };
 
 function basename(filePath) { return filePath.split(/[\\/]/).pop() || filePath; }
@@ -100,6 +102,50 @@ function encoderPresetDescription() {
   elements.encoderHint.textContent = `${names[encoder]} · ${speeds[preset]}. Codec, 10-bit, HDR, resolution, and color metadata remain source-aware.`;
 }
 function setStatus(message, type = '') { elements.status.textContent = message; elements.status.className = `status ${type}`; }
+async function checkForUpdates(manual = false) {
+  if (state.updateBusy) return;
+  state.updateBusy = true;
+  elements.updateButton.disabled = true;
+  elements.updateButton.textContent = 'Checking…';
+  try {
+    const update = await api.checkForUpdate();
+    state.availableUpdate = update;
+    if (update) {
+      elements.updateButton.textContent = `Install v${update.version}`;
+      elements.updateButton.title = update.notes || 'A new Subaroll update is available.';
+      if (manual) setStatus(`Subaroll ${update.version} is ready to install.`);
+    } else {
+      elements.updateButton.textContent = 'Check for updates';
+      elements.updateButton.title = 'Check GitHub for a newer Subaroll release.';
+      if (manual) setStatus('Subaroll is up to date.', 'success');
+    }
+  } catch (error) {
+    elements.updateButton.textContent = 'Check for updates';
+    if (manual) setStatus(`Update check failed: ${error}`, 'error');
+    else console.warn('Subaroll update check failed:', error);
+  } finally {
+    state.updateBusy = false;
+    elements.updateButton.disabled = false;
+  }
+}
+async function installAvailableUpdate() {
+  if (!state.availableUpdate || state.updateBusy) return;
+  state.updateBusy = true;
+  elements.updateButton.disabled = true;
+  elements.updateButton.textContent = 'Installing…';
+  setStatus(`Downloading and installing Subaroll ${state.availableUpdate.version}…`);
+  try {
+    await api.installUpdate();
+    setStatus('Update installed. Restarting Subaroll…');
+  } catch (error) {
+    const noLongerAvailable = String(error).includes('No update is available.');
+    if (noLongerAvailable) state.availableUpdate = null;
+    setStatus(noLongerAvailable ? 'That update is no longer available. Check again.' : `Update failed: ${error}`, noLongerAvailable ? '' : 'error');
+    elements.updateButton.textContent = state.availableUpdate ? `Install v${state.availableUpdate.version}` : 'Check for updates';
+    elements.updateButton.disabled = false;
+    state.updateBusy = false;
+  }
+}
 let fitTimer = null;
 function fitWindowToContent() {
   clearTimeout(fitTimer);
@@ -435,6 +481,7 @@ async function startBurn(isTest = false) {
 elements.testButton.addEventListener('click', () => startBurn(true));
 elements.exportButton.addEventListener('click', () => state.mode === 'compress' ? startCompression() : startBurn(false));
 elements.cancelButton.addEventListener('click', () => api.cancelExport());
+elements.updateButton.addEventListener('click', () => state.availableUpdate ? installAvailableUpdate() : checkForUpdates(true));
 api.onProgress(value => {
   const percent = Math.max(0, Math.min(100, Math.round(value * 100)));
   elements.progressBar.style.width = `${percent}%`;
@@ -455,4 +502,5 @@ for (const target of [elements.videoPicker, elements.subtitlePicker]) {
 restoreSubtitleSettings();
 refreshQualityDisplay();
 checkTools();
+checkForUpdates();
 window.addEventListener('load', fitWindowToContent, { once: true });

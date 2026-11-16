@@ -1,4 +1,5 @@
 mod media;
+mod updates;
 
 use media::AppState;
 use tauri::Manager;
@@ -12,6 +13,7 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             media::tool_status,
@@ -26,6 +28,8 @@ pub fn run() {
             media::start_compression,
             media::cancel_export,
             media::reveal_output,
+            updates::check_for_update,
+            updates::install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Subaroll");
