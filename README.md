@@ -36,8 +36,8 @@ Subaroll burns external subtitle files into video or compresses video to a chose
 
 ## Install 1.2
 
-- **macOS 11 or newer, Apple silicon only (M1 or newer):** download [Subaroll 1.2 for macOS](https://github.com/AbrahamYB/Subaroll/releases/download/v1.2/Subaroll_1.2_aarch64.dmg), drag Subaroll into Applications, then right-click the app and choose **Open** on first launch. Install FFmpeg once with `brew install ffmpeg-full`.
-- **Windows 11 x64:** download the [setup EXE](https://github.com/AbrahamYB/Subaroll/releases/download/v1.2/Subaroll_1.2_x64-setup.exe) (recommended) or [MSI installer](https://github.com/AbrahamYB/Subaroll/releases/download/v1.2/Subaroll_1.2_x64_en-US.msi). FFmpeg and FFprobe are included. If SmartScreen appears, choose **More info → Run anyway**.
+- **macOS 11 or newer, Apple silicon only (M1 or newer):** download [Subaroll 1.2 for macOS](https://github.com/AbrahamYB/Subaroll/releases/download/v1.2/Subaroll_1.2.0_aarch64.dmg), drag Subaroll into Applications, then right-click the app and choose **Open** on first launch. Install FFmpeg once with `brew install ffmpeg-full`.
+- **Windows 11 x64:** download the [setup EXE](https://github.com/AbrahamYB/Subaroll/releases/download/v1.2/Subaroll_1.2.0_x64-setup.exe) (recommended) or [MSI installer](https://github.com/AbrahamYB/Subaroll/releases/download/v1.2/Subaroll_1.2.0_x64_en-US.msi). FFmpeg and FFprobe are included. If SmartScreen appears, choose **More info → Run anyway**.
 
 The release installers are unsigned and not notarized. Windows release packages include the pinned FFmpeg build documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
