@@ -1,6 +1,17 @@
 # Changelogs
 
-Release history for Subaroll. Public releases use the `major.minor` format (`v1.0`, `v1.1`).
+Release history for Subaroll. Public releases use the `major.minor` format (`v1.0`, `v1.1`, `v1.2`).
+
+## v1.2
+
+**Summary:** Hardened the app's web content policy, serialized preview work, made export job tracking atomic, capped media-tool output and subtitle/font resource use, and pinned release workflow actions.
+
+- Enabled a restrictive Content Security Policy for the bundled WebView, limiting scripts and connections to app-owned resources and Tauri IPC while preserving the app's dynamic preview styles.
+- Serialized preview rendering so rapid seeking or repeated adjustments keep at most one render in flight and only queue the latest requested preview. Preview frames have a bounded size.
+- Made export and compression jobs reserve a single shared job slot before background work begins. This prevents overlapping runs and keeps cancellation tied to the active process.
+- Bounded FFmpeg/FFprobe output captured in memory and capped subtitle text and adjacent-font files processed during inspection, preview, and export. Font symlinks are skipped.
+- Pinned GitHub Actions to immutable commit SHAs, disabled checkout credential persistence, and scoped the release write permission to the publishing job.
+- Kept public release tags and download naming in `major.minor` form. This release is `v1.2`; the app's internal package version remains SemVer `1.2.0` for update comparisons.
 
 ## v1.1
 

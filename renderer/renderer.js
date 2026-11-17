@@ -1,7 +1,7 @@
 const api = window.subaroll;
 const state = {
   videoPath: '', subtitlePath: '', outputPath: '', metadata: null,
-  mode: 'subtitles', exporting: false, previewTimer: null, previewRequest: 0, videoEncoder: '', platform: '', availableVideoEncoders: [], availableAv1Encoders: [], renderedPreviewSettings: null, renderedPreviewLayout: null, subtitleTiming: null, subtitleWarning: '',
+  mode: 'subtitles', exporting: false, previewTimer: null, previewRequest: 0, previewBusy: false, previewPending: false, videoEncoder: '', platform: '', availableVideoEncoders: [], availableAv1Encoders: [], renderedPreviewSettings: null, renderedPreviewLayout: null, subtitleTiming: null, subtitleWarning: '',
   availableUpdate: null, updateBusy: false,
 };
 
@@ -234,6 +234,9 @@ async function checkTools() {
 
 async function setVideo(videoPath) {
   if (!videoPath) return;
+  clearTimeout(state.previewTimer);
+  state.previewRequest += 1;
+  state.previewPending = false;
   state.videoPath = videoPath;
   elements.videoName.textContent = basename(videoPath);
   setStatus('Reading video details…');
@@ -276,6 +279,9 @@ function updateSubtitleWarning() {
 
 async function setSubtitle(subtitlePath) {
   if (!subtitlePath) return;
+  clearTimeout(state.previewTimer);
+  state.previewRequest += 1;
+  state.previewPending = false;
   state.subtitlePath = subtitlePath;
   elements.subtitleName.textContent = basename(subtitlePath);
   try { state.subtitleTiming = await api.inspectSubtitle(subtitlePath); } catch (_) { state.subtitleTiming = null; }
@@ -288,6 +294,12 @@ async function setSubtitle(subtitlePath) {
 
 async function renderPreview() {
   if (!(state.videoPath && state.subtitlePath && state.metadata) || state.exporting) return;
+  if (state.previewBusy) {
+    state.previewPending = true;
+    return;
+  }
+  state.previewBusy = true;
+  state.previewPending = false;
   const request = ++state.previewRequest;
   const renderedSettings = settings();
   elements.previewSpinner.hidden = false;
@@ -321,6 +333,12 @@ async function renderPreview() {
     elements.previewSpinner.hidden = true;
     elements.previewSubtitles.style.visibility = 'visible';
     setStatus(error.message, 'error');
+  } finally {
+    state.previewBusy = false;
+    if (state.previewPending && !state.exporting) {
+      state.previewPending = false;
+      schedulePreview(0);
+    }
   }
 }
 
@@ -349,6 +367,7 @@ function beginLiveSubtitleAdjustment() {
 
 function schedulePreview(delay = 320) {
   clearTimeout(state.previewTimer);
+  state.previewRequest += 1;
   state.previewTimer = setTimeout(renderPreview, delay);
 }
 

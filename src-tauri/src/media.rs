@@ -8,7 +8,10 @@ use std::{
     io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 use tauri::{Emitter, State, WebviewWindow};
 use tempfile::TempDir;
@@ -17,11 +20,34 @@ const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mkv", "mov", "avi", "webm", "m4v", "ts", "mts", "m2ts",
 ];
 const SUBTITLE_EXTENSIONS: &[&str] = &["ass", "ssa", "srt", "vtt", "sub", "smi"];
+const MAX_TOOL_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_PREVIEW_FRAME_BYTES: usize = 32 * 1024 * 1024;
+const MAX_SUBTITLE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_FONT_FILES: usize = 32;
+const MAX_FONT_FILE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_FONT_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Default)]
 pub struct AppState {
     active_pid: Arc<Mutex<Option<u32>>>,
+    job_running: Arc<AtomicBool>,
     custom_ffmpeg: Mutex<Option<String>>,
+}
+
+struct JobGuard(Arc<AtomicBool>);
+
+impl Drop for JobGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+fn reserve_job(state: &AppState) -> Result<JobGuard, String> {
+    state
+        .job_running
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .map(|_| JobGuard(state.job_running.clone()))
+        .map_err(|_| "An export is already running.".to_owned())
 }
 
 #[derive(Clone, Serialize)]
@@ -295,7 +321,9 @@ fn find_tools(custom: Option<String>) -> Option<Tools> {
             candidates.push(value);
         }
     }
-    if let Ok(value) = std::env::var("SUBAROLL_FFMPEG").or_else(|_| std::env::var("SUBTITLE_BURNER_FFMPEG")) {
+    if let Ok(value) =
+        std::env::var("SUBAROLL_FFMPEG").or_else(|_| std::env::var("SUBTITLE_BURNER_FFMPEG"))
+    {
         candidates.push(value);
     }
     #[cfg(target_os = "macos")]
@@ -449,15 +477,76 @@ pub fn choose_output(suggested: String) -> String {
 }
 
 fn run_output(command: &str, args: &[String]) -> Result<Vec<u8>, String> {
-    let output = Command::new(command)
+    run_output_with_limit(command, args, MAX_TOOL_OUTPUT_BYTES)
+}
+
+fn run_output_with_limit(
+    command: &str,
+    args: &[String],
+    output_limit: usize,
+) -> Result<Vec<u8>, String> {
+    let mut child = Command::new(command)
         .args(args)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| e.to_string())?;
-    if output.status.success() {
-        Ok(output.stdout)
-    } else {
-        Err(last_lines(&String::from_utf8_lossy(&output.stderr)))
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let out_thread = std::thread::spawn(move || read_capped(stdout, output_limit));
+    let err_thread = std::thread::spawn(move || read_capped(stderr, MAX_TOOL_OUTPUT_BYTES));
+    let status = child.wait();
+    let (stdout, stdout_truncated) = out_thread.join().unwrap_or_default();
+    let (stderr, stderr_truncated) = err_thread.join().unwrap_or_default();
+    let status = status.map_err(|e| e.to_string())?;
+    if stdout_truncated {
+        return Err(format!(
+            "Media tool output exceeded the {} MiB safety limit.",
+            output_limit / (1024 * 1024)
+        ));
     }
+    if status.success() {
+        Ok(stdout)
+    } else {
+        let mut message = last_lines(&String::from_utf8_lossy(&stderr));
+        if stderr_truncated {
+            message.push_str("\n(Media tool error output was truncated.)");
+        }
+        Err(message)
+    }
+}
+
+fn read_text_capped(path: &Path, limit: u64, description: &str) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .and_then(|file| file.take(limit + 1).read_to_end(&mut bytes))
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > limit {
+        return Err(format!(
+            "{description} exceeds the {} MiB safety limit.",
+            limit / (1024 * 1024)
+        ));
+    }
+    String::from_utf8(bytes).map_err(|e| e.to_string())
+}
+
+fn read_capped<R: Read>(mut reader: R, limit: usize) -> (Vec<u8>, bool) {
+    let mut kept = Vec::with_capacity(limit.min(64 * 1024));
+    let mut buffer = [0u8; 16 * 1024];
+    let mut truncated = false;
+    loop {
+        let Ok(count) = reader.read(&mut buffer) else {
+            break;
+        };
+        if count == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(kept.len());
+        let keep = count.min(remaining);
+        kept.extend_from_slice(&buffer[..keep]);
+        truncated |= keep < count;
+    }
+    (kept, truncated)
 }
 
 fn last_lines(text: &str) -> String {
@@ -636,7 +725,11 @@ pub struct SubtitleTiming {
 
 #[tauri::command]
 pub fn inspect_subtitle(subtitle_path: String) -> Result<SubtitleTiming, String> {
-    let text = fs::read_to_string(subtitle_path).map_err(|e| e.to_string())?;
+    let text = read_text_capped(
+        Path::new(&subtitle_path),
+        MAX_SUBTITLE_BYTES,
+        "Subtitle file",
+    )?;
     let re = Regex::new(r"(\d{1,2}):(\d{2}):(\d{2})[,.](\d{2,3})").unwrap();
     let mut count = 0;
     let mut last: f64 = 0.0;
@@ -878,6 +971,9 @@ fn prepare_subtitle(
         .unwrap_or("")
         .to_lowercase();
     let styled = ext == "ass" || ext == "ssa";
+    if fs::metadata(subtitle).map_err(|e| e.to_string())?.len() > MAX_SUBTITLE_BYTES {
+        return Err("Subtitle file exceeds the 16 MiB safety limit.".into());
+    }
     if ext == "ass" {
         fs::copy(subtitle, &converted).map_err(|e| e.to_string())?;
     } else {
@@ -897,7 +993,10 @@ fn prepare_subtitle(
             .collect::<Vec<_>>(),
         )?;
     }
-    let source = fs::read_to_string(&converted).map_err(|e| e.to_string())?;
+    if fs::metadata(&converted).map_err(|e| e.to_string())?.len() > MAX_SUBTITLE_BYTES {
+        return Err("Converted subtitle exceeds the 16 MiB safety limit.".into());
+    }
+    let source = read_text_capped(&converted, MAX_SUBTITLE_BYTES, "Converted subtitle")?;
     let c = canvas(metadata);
     let result = transform_ass(
         &source,
@@ -907,6 +1006,7 @@ fn prepare_subtitle(
     );
     fs::write(&ass, &result).map_err(|e| e.to_string())?;
     let mut count = 0;
+    let mut total_font_bytes = 0u64;
     if let Some(parent) = Path::new(subtitle).parent() {
         if let Ok(entries) = fs::read_dir(parent) {
             for e in entries.flatten() {
@@ -916,9 +1016,34 @@ fn prepare_subtitle(
                     .map(|x| matches!(x.to_lowercase().as_str(), "ttf" | "otf" | "ttc" | "otc"))
                     .unwrap_or(false)
                 {
-                    if fs::copy(&p, fonts.join(p.file_name().unwrap())).is_ok() {
-                        count += 1
+                    let Ok(file_type) = fs::symlink_metadata(&p).map(|m| m.file_type()) else {
+                        continue;
+                    };
+                    if !file_type.is_file() {
+                        continue;
                     }
+                    if count >= MAX_FONT_FILES {
+                        return Err("Subtitle folder contains more than 32 font files.".into());
+                    }
+                    let remaining = MAX_FONT_TOTAL_BYTES.saturating_sub(total_font_bytes);
+                    if remaining == 0 {
+                        return Err("Subtitle fonts exceed the 64 MiB total safety limit.".into());
+                    }
+                    let read_limit = MAX_FONT_FILE_BYTES.min(remaining);
+                    let mut font = Vec::new();
+                    match fs::File::open(&p)
+                        .and_then(|file| file.take(read_limit + 1).read_to_end(&mut font))
+                    {
+                        Ok(_) if font.len() as u64 > read_limit => {
+                            return Err("Subtitle fonts exceed the 64 MiB total or 16 MiB per-file safety limit.".into());
+                        }
+                        Ok(_) => {}
+                        Err(_) => continue,
+                    }
+                    fs::write(fonts.join(p.file_name().unwrap()), &font)
+                        .map_err(|e| e.to_string())?;
+                    count += 1;
+                    total_font_bytes += font.len() as u64;
                 }
             }
         }
@@ -1040,7 +1165,7 @@ pub async fn render_preview(
             )
         }
         ff.push("format=rgb24".into());
-        run_output(
+        run_output_with_limit(
             &tools.ffmpeg,
             &[
                 "-hide_banner",
@@ -1065,6 +1190,7 @@ pub async fn render_preview(
             .into_iter()
             .map(|x| x.to_owned())
             .collect::<Vec<_>>(),
+            MAX_PREVIEW_FRAME_BYTES,
         )?;
         let filter = format!(
             "format=rgba,{}",
@@ -1408,11 +1534,7 @@ fn run_progress(
         .spawn()
         .ok();
     let stderr = child.stderr.take().unwrap();
-    let err_thread = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = BufReader::new(stderr).read_to_string(&mut s);
-        s
-    });
+    let err_thread = std::thread::spawn(move || read_capped(stderr, MAX_TOOL_OUTPUT_BYTES));
     if let Some(stdout) = child.stdout.take() {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             if let Some(v) = line
@@ -1428,13 +1550,18 @@ fn run_progress(
             }
         }
     }
-    let status = child.wait().map_err(|e| e.to_string())?;
+    let status = child.wait();
     *active.lock().unwrap() = None;
-    let stderr = err_thread.join().unwrap_or_default();
+    let (stderr, truncated) = err_thread.join().unwrap_or_default();
+    let status = status.map_err(|e| e.to_string())?;
     if status.success() {
         Ok(())
     } else {
-        Err(last_lines(&stderr))
+        let mut message = last_lines(&String::from_utf8_lossy(&stderr));
+        if truncated {
+            message.push_str("\n(Media tool error output was truncated.)");
+        }
+        Err(message)
     }
 }
 
@@ -1444,12 +1571,11 @@ pub async fn start_export(
     state: State<'_, AppState>,
     input: ExportInput,
 ) -> Result<ExportResult, String> {
-    if state.active_pid.lock().unwrap().is_some() {
-        return Err("An export is already running.".into());
-    }
+    let job_guard = reserve_job(&state)?;
     let tools = tools_for(&state)?;
     let active = state.active_pid.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _job_guard = job_guard;
         let m = match input.metadata {
             Some(m) => m,
             None => probe_media(&tools.ffprobe, &input.video_path)?,
@@ -1823,12 +1949,11 @@ pub async fn start_compression(
     state: State<'_, AppState>,
     input: CompressionInput,
 ) -> Result<CompressionResult, String> {
-    if state.active_pid.lock().unwrap().is_some() {
-        return Err("An export is already running.".into());
-    }
+    let job_guard = reserve_job(&state)?;
     let tools = tools_for(&state)?;
     let active = state.active_pid.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _job_guard = job_guard;
         let m = match input.metadata {
             Some(m) => m,
             None => probe_media(&tools.ffprobe, &input.video_path)?,
@@ -2065,6 +2190,27 @@ pub fn reveal_output(output_path: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn media_tool_output_is_capped_and_truncation_is_reported() {
+        let (kept, truncated) = read_capped(&b"abcdef"[..], 4);
+        assert_eq!(kept, b"abcd");
+        assert!(truncated);
+
+        let (kept, truncated) = read_capped(&b"abc"[..], 4);
+        assert_eq!(kept, b"abc");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn export_reservation_allows_only_one_active_job() {
+        let state = AppState::default();
+        let first = reserve_job(&state).unwrap();
+        assert!(reserve_job(&state).is_err());
+        drop(first);
+        assert!(reserve_job(&state).is_ok());
+    }
+
     #[test]
     fn cinematic_canvas_adds_only_bottom_area() {
         let m = MediaMetadata {
