@@ -197,9 +197,15 @@ function setMode(mode) {
 
 async function checkTools() {
   const result = await api.toolStatus();
+  state.platform = result.platform || '';
+  const windows = state.platform === 'windows';
+  document.documentElement.classList.toggle('platform-windows', windows);
+  elements.windowsEncoderCard.classList.toggle('is-unavailable', !windows);
+  elements.windowsEncoder.disabled = !windows;
+  elements.windowsPreset.disabled = !windows;
+  elements.encoderAvailability.textContent = windows ? 'Detecting…' : 'Windows only';
   if (result.ok) {
     state.videoEncoder = result.videoEncoder;
-    state.platform = result.platform || '';
     state.availableVideoEncoders = result.availableVideoEncoders || [];
     state.availableAv1Encoders = result.availableAv1Encoders || [];
     const av1Option = elements.compressionCodec.querySelector('option[value="av1"]');
@@ -212,10 +218,10 @@ async function checkTools() {
     elements.compressionCodecHint.textContent = state.availableAv1Encoders.length
       ? `Hardware AV1 ready: ${state.availableAv1Encoders.map(value => av1Labels[value]).join(' + ')}.`
       : 'No usable hardware AV1 encoder detected; Auto uses H.264 or CPU fallback.';
-    const windows = state.platform === 'windows';
-    elements.windowsEncoderCard.hidden = !windows;
     if (windows) {
       const available = new Set(state.availableVideoEncoders);
+      elements.windowsEncoder.disabled = false;
+      elements.windowsPreset.disabled = false;
       for (const option of elements.windowsEncoder.options) {
         if (!['auto', 'software'].includes(option.value)) option.disabled = !available.has(option.value);
       }
@@ -228,6 +234,7 @@ async function checkTools() {
       saveSubtitleSettings();
     }
   } else {
+    elements.encoderAvailability.textContent = windows ? 'Unavailable' : 'Windows only';
     setStatus('FFmpeg with libass is required.', 'error');
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "subaroll",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Native Rust/Tauri IINA/libass-style subtitle burn-in tool",
   "author": "Local project",
   "license": "MIT",

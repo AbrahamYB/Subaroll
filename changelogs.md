@@ -11,7 +11,8 @@ Release history for Subaroll. Public releases use the `major.minor` format (`v1.
 - Made export and compression jobs reserve a single shared job slot before background work begins. This prevents overlapping runs and keeps cancellation tied to the active process.
 - Bounded FFmpeg/FFprobe output captured in memory and capped subtitle text and adjacent-font files processed during inspection, preview, and export. Font symlinks are skipped.
 - Pinned GitHub Actions to immutable commit SHAs, disabled checkout credential persistence, and scoped the release write permission to the publishing job.
-- Kept public release tags and download naming in `major.minor` form. This release is `v1.2`; the app's internal package version remains SemVer `1.2.0` for update comparisons.
+- Kept public release tags and download naming in `major.minor` form. This release is `v1.2`; the app uses an internal SemVer version for update comparisons.
+- Follow-up within the same `v1.2` release: Windows GPU and preset controls now remain visible but disabled and clearly marked Windows-only on macOS. Tightened outer gutters and compact-height spacing so panels keep a clear inset from the window edges. Internal updater version is now `1.2.1`; public release tag and download naming stay `v1.2`.
 
 ## v1.1
 

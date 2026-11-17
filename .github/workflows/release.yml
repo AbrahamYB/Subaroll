@@ -82,7 +82,7 @@ jobs:
           releaseBody: |
             Subaroll v1.2 security and reliability update for Apple silicon macOS and Windows 11 x64.
 
-            Hardens the app's WebView content policy, prevents preview/export work from piling up, bounds media-tool output and subtitle/font resources, and pins release workflow actions. Full details are in [changelogs.md](https://github.com/AbrahamYB/Subaroll/blob/main/changelogs.md).
+            Hardens the app's WebView content policy, prevents preview/export work from piling up, bounds media-tool output and subtitle/font resources, pins release workflow actions, and disables Windows-only GPU controls on macOS. Full details are in [changelogs.md](https://github.com/AbrahamYB/Subaroll/blob/main/changelogs.md).
 
             Download the installer for your platform from the assets below.
           releaseDraft: false

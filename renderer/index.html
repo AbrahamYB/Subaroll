@@ -97,11 +97,11 @@
           <p id="qualityHint" class="quality-hint">CQ is passed directly to HEVC VideoToolbox; CQ 90 means q90.</p>
         </section>
 
-        <section id="windowsEncoderCard" class="control-card encoder-card subtitle-only" hidden>
-          <div class="control-heading"><label for="windowsEncoder">Windows encoder</label><output id="encoderAvailability">Detecting…</output></div>
+        <section id="windowsEncoderCard" class="control-card encoder-card subtitle-only">
+          <div class="control-heading"><label for="windowsEncoder">Windows encoder</label><output id="encoderAvailability">Windows only</output></div>
           <div class="encoder-fields">
             <label for="windowsEncoder">GPU</label>
-            <select id="windowsEncoder">
+            <select id="windowsEncoder" disabled>
               <option value="auto">Auto · best available</option>
               <option value="nvenc">NVIDIA NVENC</option>
               <option value="amf">AMD AMF</option>
@@ -109,7 +109,7 @@
               <option value="software">CPU software</option>
             </select>
             <label for="windowsPreset">Preset</label>
-            <select id="windowsPreset">
+            <select id="windowsPreset" disabled>
               <option value="quality">CTT Quality · best</option>
               <option value="balanced">Balanced</option>
               <option value="fast">Fast</option>
