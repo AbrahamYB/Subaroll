@@ -35,6 +35,10 @@ function formatTime(seconds) {
   const secs = total % 60;
   return hours ? `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}` : `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 }
+function publicReleaseVersion(version) {
+  const match = String(version).match(/^(\d+)\.(\d+)(?:\.|$)/);
+  return match ? `${match[1]}.${match[2]}` : String(version);
+}
 function previewCanvas(metadata) {
   const width = Number(metadata?.width) || 16;
   const height = Number(metadata?.height) || 9;
@@ -111,9 +115,9 @@ async function checkForUpdates(manual = false) {
     const update = await api.checkForUpdate();
     state.availableUpdate = update;
     if (update) {
-      elements.updateButton.textContent = `Install v${update.version}`;
+      elements.updateButton.textContent = `Install v${publicReleaseVersion(update.version)}`;
       elements.updateButton.title = update.notes || 'A new Subaroll update is available.';
-      if (manual) setStatus(`Subaroll ${update.version} is ready to install.`);
+      if (manual) setStatus(`Subaroll ${publicReleaseVersion(update.version)} is ready to install.`);
     } else {
       elements.updateButton.textContent = 'Check for updates';
       elements.updateButton.title = 'Check GitHub for a newer Subaroll release.';
@@ -133,7 +137,7 @@ async function installAvailableUpdate() {
   state.updateBusy = true;
   elements.updateButton.disabled = true;
   elements.updateButton.textContent = 'Installing…';
-  setStatus(`Downloading and installing Subaroll ${state.availableUpdate.version}…`);
+  setStatus(`Downloading and installing Subaroll ${publicReleaseVersion(state.availableUpdate.version)}…`);
   try {
     await api.installUpdate();
     setStatus('Update installed. Restarting Subaroll…');
@@ -141,7 +145,7 @@ async function installAvailableUpdate() {
     const noLongerAvailable = String(error).includes('No update is available.');
     if (noLongerAvailable) state.availableUpdate = null;
     setStatus(noLongerAvailable ? 'That update is no longer available. Check again.' : `Update failed: ${error}`, noLongerAvailable ? '' : 'error');
-    elements.updateButton.textContent = state.availableUpdate ? `Install v${state.availableUpdate.version}` : 'Check for updates';
+    elements.updateButton.textContent = state.availableUpdate ? `Install v${publicReleaseVersion(state.availableUpdate.version)}` : 'Check for updates';
     elements.updateButton.disabled = false;
     state.updateBusy = false;
   }
