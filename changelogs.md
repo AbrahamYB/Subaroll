@@ -13,6 +13,7 @@ Release history for Subaroll. Public releases use the `major.minor` format (`v1.
 - Pinned GitHub Actions to immutable commit SHAs, disabled checkout credential persistence, and scoped the release write permission to the publishing job.
 - Kept public release tags and download naming in `major.minor` form. This release is `v1.2`; the app uses an internal SemVer version for update comparisons.
 - Follow-up within the same `v1.2` release: Windows GPU and preset controls now remain visible but disabled and clearly marked Windows-only on macOS. The workspace now respects the window height and preserves a 28px bottom inset, using the previous excess top inset. Internal updater version is now `1.2.2`; public release tag and download naming stay `v1.2`.
+- Additional follow-up within `v1.2`: the Discord size-target heading now wraps instead of colliding with the size controls at narrow window widths. Removed the duplicate compression attribution from the app UI; project credit remains in the GitHub repository. Internal updater version is now `1.2.3`.
 
 ## v1.1
 

@@ -1,6 +1,6 @@
 [package]
 name = "subaroll"
-version = "1.2.2"
+version = "1.2.3"
 description = "Native subtitle burn-in and Discord compression tool"
 authors = ["Local project"]
 edition = "2021"
