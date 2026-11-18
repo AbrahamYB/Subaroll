@@ -3,4 +3,8 @@
 <plist version="1.0"><dict>
   <key>NSDownloadsFolderUsageDescription</key>
   <string>Subaroll needs access to videos and subtitle files you select in Downloads.</string>
+  <key>LSRequiresCarbon</key>
+  <false/>
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
 </dict></plist>
