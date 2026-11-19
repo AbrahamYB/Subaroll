@@ -1,4 +1,5 @@
 const api = window.subaroll;
+document.documentElement.classList.toggle('platform-windows', /Windows/.test(navigator.userAgent));
 const state = {
   videoPath: '', subtitlePath: '', outputPath: '', metadata: null,
   mode: 'subtitles', exporting: false, previewTimer: null, previewRequest: 0, previewBusy: false, previewPending: false, videoEncoder: '', platform: '', availableVideoEncoders: [], availableAv1Encoders: [], renderedPreviewSettings: null, renderedPreviewLayout: null, subtitleTiming: null, subtitleWarning: '',
