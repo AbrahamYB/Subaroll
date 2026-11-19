@@ -118,15 +118,15 @@ async function checkForUpdates(manual = false) {
   elements.updateButton.disabled = true;
   elements.updateButton.textContent = 'Checking…';
   try {
-    const update = await api.checkForUpdate();
+    const { installedVersion, update } = await api.checkForUpdate();
     state.availableUpdate = update;
     if (update) {
       elements.updateButton.textContent = `Install v${publicReleaseVersion(update.version)}`;
-      elements.updateButton.title = update.notes || 'A new Subaroll update is available.';
+      elements.updateButton.title = [`Installed build ${installedVersion}. Available build ${update.version}.`, update.notes].filter(Boolean).join('\n\n');
       if (manual) setStatus(`Subaroll ${publicReleaseVersion(update.version)} is ready to install.`);
     } else {
       elements.updateButton.textContent = 'Check for updates';
-      elements.updateButton.title = 'Check GitHub for a newer Subaroll release.';
+      elements.updateButton.title = `Installed build ${installedVersion}. Check GitHub for a newer build.`;
       if (manual) setStatus('Subaroll is up to date.', 'success');
     }
   } catch (error) {

@@ -266,7 +266,8 @@ fn encoder_usable(ffmpeg: &str, encoder: &str, ten_bit: bool) -> bool {
             "-f",
             "lavfi",
             "-i",
-            "color=c=black:s=64x64:r=1",
+            // NVENC can reject a 64x64 input even when the encoder is usable.
+            "color=c=black:s=256x256:r=30",
             "-frames:v",
             "1",
             "-c:v",
