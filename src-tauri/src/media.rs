@@ -56,6 +56,7 @@ pub struct ToolStatus {
     ok: bool,
     ffmpeg: Option<String>,
     video_encoder: Option<String>,
+    auto_video_encoder_10bit: Option<String>,
     platform: String,
     available_video_encoders: Vec<String>,
     available_av1_encoders: Vec<String>,
@@ -297,6 +298,16 @@ fn windows_hardware_encoder(ffmpeg: &str, ten_bit: bool, requested: &str) -> Opt
         .find(|encoder| encoder_usable(ffmpeg, encoder, ten_bit))
 }
 
+fn windows_burn_encoder(ffmpeg: &str, ten_bit: bool, requested: &str) -> &'static str {
+    windows_hardware_encoder(ffmpeg, ten_bit, requested).unwrap_or_else(|| {
+        if ten_bit && supports_encoder(ffmpeg, "libx265") {
+            "libx265"
+        } else {
+            "libx264"
+        }
+    })
+}
+
 fn available_windows_encoders(ffmpeg: &str) -> Vec<String> {
     [
         ("nvenc", "h264_nvenc"),
@@ -383,7 +394,7 @@ fn find_tools(custom: Option<String>) -> Option<Tools> {
             if cfg!(target_os = "macos") && supports_encoder(&ffmpeg, "hevc_videotoolbox") {
                 "hevc_videotoolbox"
             } else if cfg!(target_os = "windows") {
-                windows_hardware_encoder(&ffmpeg, false, "auto").unwrap_or("libx264")
+                windows_burn_encoder(&ffmpeg, false, "auto")
             } else {
                 "libx264"
             }
@@ -422,6 +433,8 @@ pub fn tool_status(state: State<AppState>) -> ToolStatus {
             };
             ToolStatus {
                 ok: true,
+                auto_video_encoder_10bit: cfg!(windows)
+                    .then(|| windows_burn_encoder(&t.ffmpeg, true, "auto").to_owned()),
                 ffmpeg: Some(t.ffmpeg),
                 video_encoder: Some(t.video_encoder),
                 platform: std::env::consts::OS.into(),
@@ -434,6 +447,7 @@ pub fn tool_status(state: State<AppState>) -> ToolStatus {
             ok: false,
             ffmpeg: None,
             video_encoder: None,
+            auto_video_encoder_10bit: None,
             platform: std::env::consts::OS.into(),
             available_video_encoders: Vec::new(),
             available_av1_encoders: Vec::new(),
@@ -1441,14 +1455,12 @@ fn encoder_args(
         a.extend(color_args(m));
         ("hevc_videotoolbox".into(), a, ten)
     } else if cfg!(target_os = "windows") {
-        if settings.windows_encoder != "software" {
-            if let Some(hardware) = windows_hardware_encoder(ffmpeg, ten, &settings.windows_encoder)
-            {
-                a = windows_encoder_args(hardware, ten, quality, &settings.windows_preset, m);
-                return (hardware.into(), a, ten);
-            }
+        let encoder = windows_burn_encoder(ffmpeg, ten, &settings.windows_encoder);
+        if !encoder.starts_with("libx") {
+            a = windows_encoder_args(encoder, ten, quality, &settings.windows_preset, m);
+            return (encoder.into(), a, ten);
         }
-        if ten && supports_encoder(ffmpeg, "libx265") {
+        if encoder == "libx265" {
             let crf = (47.0 - quality as f64 * 0.3).round() as i64;
             let cpu_preset = match settings.windows_preset.as_str() {
                 "fast" => "fast",

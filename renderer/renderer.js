@@ -3,7 +3,7 @@ document.documentElement.classList.toggle('platform-windows', /Windows/.test(nav
 const state = {
   videoPath: '', subtitlePath: '', outputPath: '', metadata: null,
   mode: 'subtitles', exporting: false, previewTimer: null, previewRequest: 0, previewBusy: false, previewPending: false, videoEncoder: '', platform: '', availableVideoEncoders: [], availableAv1Encoders: [], renderedPreviewSettings: null, renderedPreviewLayout: null, subtitleTiming: null, subtitleWarning: '',
-  availableUpdate: null, updateBusy: false,
+  availableUpdate: null, updateBusy: false, autoVideoEncoder10bit: '',
 };
 
 const $ = id => document.getElementById(id);
@@ -104,14 +104,31 @@ function refreshQualityDisplay() {
   elements.qualityValue.textContent = `CQ ${value} · ${label}`;
   elements.qualityHint.textContent = hint;
 }
+function autoEncoderLabel() {
+  const tenBit = state.metadata?.isHdr || state.metadata?.bitDepth > 8;
+  const encoder = tenBit ? state.autoVideoEncoder10bit : state.videoEncoder;
+  const labels = {
+    h264_nvenc: 'NVIDIA NVENC (H.264)', hevc_nvenc: 'NVIDIA NVENC (HEVC)',
+    h264_amf: 'AMD AMF (H.264)', hevc_amf: 'AMD AMF (HEVC)',
+    h264_qsv: 'Intel Quick Sync (H.264)', hevc_qsv: 'Intel Quick Sync (HEVC)',
+    libx264: 'CPU (H.264)', libx265: 'CPU (HEVC)',
+  };
+  return labels[encoder] || '';
+}
 function encoderPresetDescription() {
   const encoder = elements.windowsEncoder.value;
   const preset = elements.windowsPreset.value;
   const names = { auto: 'Auto', nvenc: 'NVIDIA NVENC', amf: 'AMD AMF', qsv: 'Intel Quick Sync', software: 'CPU' };
   const speeds = { quality: 'CTT quality', balanced: 'balanced', fast: 'fast' };
+  const autoLabel = autoEncoderLabel();
+  elements.windowsEncoder.options[0].textContent = autoLabel ? `Auto · ${autoLabel}` : 'Auto';
   elements.encoderHint.textContent = `${names[encoder]} · ${speeds[preset]}. Codec, 10-bit, HDR, resolution, and color metadata remain source-aware.`;
 }
-function setStatus(message, type = '') { elements.status.textContent = message; elements.status.className = `status ${type}`; }
+function setStatus(message, type = '') {
+  elements.status.textContent = message;
+  elements.status.title = message;
+  elements.status.className = `status ${type}`;
+}
 async function checkForUpdates(manual = false) {
   if (state.updateBusy) return;
   state.updateBusy = true;
@@ -217,6 +234,7 @@ async function checkTools() {
   elements.encoderAvailability.textContent = windows ? 'Detecting…' : 'Windows only';
   if (result.ok) {
     state.videoEncoder = result.videoEncoder;
+    state.autoVideoEncoder10bit = result.autoVideoEncoder10bit;
     state.availableVideoEncoders = result.availableVideoEncoders || [];
     state.availableAv1Encoders = result.availableAv1Encoders || [];
     const av1Option = elements.compressionCodec.querySelector('option[value="av1"]');
@@ -260,7 +278,7 @@ async function setVideo(videoPath) {
   try {
     state.metadata = await api.probe(videoPath);
     const canvas = previewCanvas(state.metadata);
-    elements.previewStage.style.aspectRatio = `${canvas.width} / ${canvas.height}`;
+    elements.previewStage.style.setProperty('--preview-ratio', canvas.width / canvas.height);
     elements.seek.max = String(state.metadata.duration || 0);
     elements.seek.value = String(Math.min(30, Math.max(0, (state.metadata.duration || 0) * .08)));
     elements.seek.disabled = !state.metadata.duration;
@@ -281,6 +299,7 @@ async function setVideo(videoPath) {
     state.metadata = null;
     setStatus(error.message, 'error');
   }
+  if (state.platform === 'windows') encoderPresetDescription();
   refreshReady();
   fitWindowToContent();
 }
@@ -481,11 +500,9 @@ async function startBurn(isTest = false) {
   const outputPath = isTest ? `${dirname(state.videoPath)}${extless(state.videoPath)} — 30s test.mp4` : state.outputPath;
   const modeLabel = isTest ? `30-second test from ${formatTime(clipStart)}` : 'full video';
   const awakeNote = ' Your Mac will stay awake if the screen locks or turns off.';
-  const hardwareName = /nvenc/i.test(state.videoEncoder) ? 'NVIDIA NVENC'
-    : /_amf/i.test(state.videoEncoder) ? 'AMD AMF'
-      : /_qsv/i.test(state.videoEncoder) ? 'Intel Quick Sync'
-        : /videotoolbox/i.test(state.videoEncoder) ? 'Apple VideoToolbox'
-          : 'the best available encoder';
+  const hardwareName = state.platform === 'windows' && elements.windowsEncoder.value === 'auto'
+    ? autoEncoderLabel() || 'automatic encoding'
+    : /videotoolbox/i.test(state.videoEncoder) ? 'Apple VideoToolbox' : 'the selected encoding settings';
   const burnDescription = state.metadata?.isHdr
     ? `Burning ${modeLabel} in 10-bit HDR with ${hardwareName} (CQ ${quality})…`
     : state.metadata?.bitDepth > 8

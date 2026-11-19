@@ -17,12 +17,14 @@ Release history for Subaroll. Public releases use the `major.minor` format (`v1.
 - Updated macOS bundle launch metadata. The local install script now waits for the old app to exit, builds the local bundle without updater artifacts, and opens the installed bundle through macOS Launch Services.
 - Subtitle delay, position, size, and quality restore on restart. Fixed a bug that subtracted five points from a saved subtitle position and prevented older settings from being migrated repeatedly.
 - The app remembers the last selected mode, compression target and codec, and Windows encoder and preset. GPU detection can use Auto when a saved encoder is unavailable without overwriting the saved preference.
-- The updater displays the public version, such as `v1.2`. This build uses internal version `1.2.8` so existing installations can detect the update.
+- The updater displays the public version, such as `v1.2`. This build uses internal version `1.2.9` so existing installations can detect the update.
 
 - Windows release builds open directly into the Subaroll window. FFmpeg and FFprobe run in the background without console windows. The EXE and MSI include both media tools and an offline WebView2 installer for systems missing the runtime.
 - On Windows, the settings panel fits its contents when resized or maximized. The footer stays with the action buttons, the sidebar keeps a stable width, and a smaller top inset fits the native Windows title bar. Compact controls keep export progress visible at short window heights.
 - Windows GPU detection uses a 256×256 test encode. This fixes false negatives when NVIDIA NVENC rejects the previous 64×64 input. Hardware options still require a successful encoder test.
 - Update checks ask caches to revalidate GitHub’s manifest and include the installed build in the request. Hovering over the update button shows the installed and available build numbers.
+- The Windows Auto encoder option names the selected GPU or CPU encoder and its codec. The label reflects whether the source needs H.264 or 10-bit HEVC.
+- The preview scales to the available window space while preserving its aspect ratio. The settings panel fits its contents, and the action buttons, status, and update control remain visible at short window heights.
 
 ## v1.1
 
