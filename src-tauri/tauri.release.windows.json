@@ -4,6 +4,11 @@
       "binaries/ffmpeg",
       "binaries/ffprobe"
     ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller"
+      }
+    },
     "resources": [
       "../THIRD_PARTY_NOTICES.md"
     ]

@@ -214,8 +214,22 @@ pub struct CompressionPlan {
     output_fps: f64,
 }
 
-fn command_ok(command: &str, args: &[&str]) -> bool {
+fn background_command(command: &str) -> Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut child = Command::new(command);
+        child.creation_flags(CREATE_NO_WINDOW);
+        child
+    }
+    #[cfg(not(windows))]
     Command::new(command)
+}
+
+fn command_ok(command: &str, args: &[&str]) -> bool {
+    background_command(command)
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -225,7 +239,7 @@ fn command_ok(command: &str, args: &[&str]) -> bool {
 }
 
 fn command_text(command: &str, args: &[&str]) -> String {
-    Command::new(command)
+    background_command(command)
         .args(args)
         .output()
         .ok()
@@ -244,7 +258,7 @@ fn encoder_usable(ffmpeg: &str, encoder: &str, ten_bit: bool) -> bool {
     if !supports_encoder(ffmpeg, encoder) {
         return false;
     }
-    Command::new(ffmpeg)
+    background_command(ffmpeg)
         .args([
             "-hide_banner",
             "-loglevel",
@@ -485,7 +499,7 @@ fn run_output_with_limit(
     args: &[String],
     output_limit: usize,
 ) -> Result<Vec<u8>, String> {
-    let mut child = Command::new(command)
+    let mut child = background_command(command)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1521,7 +1535,7 @@ fn run_progress(
     window: &WebviewWindow,
     active: &Arc<Mutex<Option<u32>>>,
 ) -> Result<(), String> {
-    let mut child = Command::new(command)
+    let mut child = background_command(command)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1886,7 +1900,7 @@ fn compression_recipe_usable(
     ];
     args.extend(recipe.args.clone());
     args.extend(["-an".into(), "-f".into(), "null".into(), "-".into()]);
-    Command::new(ffmpeg)
+    background_command(ffmpeg)
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -2150,7 +2164,7 @@ pub fn cancel_export(state: State<AppState>) -> bool {
         }
         #[cfg(windows)]
         {
-            let _ = Command::new("taskkill")
+            let _ = background_command("taskkill")
                 .args(["/PID", &pid.to_string(), "/T", "/F"])
                 .status();
         }

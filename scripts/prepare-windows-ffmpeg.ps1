@@ -25,6 +25,11 @@ Copy-Item $ffmpeg.FullName (Join-Path $destination "ffmpeg-x86_64-pc-windows-msv
 Copy-Item $ffprobe.FullName (Join-Path $destination "ffprobe-x86_64-pc-windows-msvc.exe") -Force
 
 $filters = & (Join-Path $destination "ffmpeg-x86_64-pc-windows-msvc.exe") -hide_banner -filters 2>&1 | Out-String
-if ($filters -notmatch "subtitles\s+V->V") {
+if ($LASTEXITCODE -ne 0 -or $filters -notmatch "subtitles\s+V->V") {
   throw "The bundled FFmpeg build does not expose the libass subtitles filter."
+}
+
+& (Join-Path $destination "ffprobe-x86_64-pc-windows-msvc.exe") -version
+if ($LASTEXITCODE -ne 0) {
+  throw "The bundled FFprobe executable could not run."
 }

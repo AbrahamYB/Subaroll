@@ -17,7 +17,9 @@ Release history for Subaroll. Public releases use the `major.minor` format (`v1.
 - Updated macOS bundle launch metadata. The local install script now waits for the old app to exit, builds the local bundle without updater artifacts, and opens the installed bundle through macOS Launch Services.
 - Subtitle delay, position, size, and quality restore on restart. Fixed a bug that subtracted five points from a saved subtitle position and prevented older settings from being migrated repeatedly.
 - The app remembers the last selected mode, compression target and codec, and Windows encoder and preset. GPU detection can use Auto when a saved encoder is unavailable without overwriting the saved preference.
-- The updater displays the public version, such as `v1.2`. This build uses internal version `1.2.5` so existing installations can detect the update.
+- The updater displays the public version, such as `v1.2`. This build uses internal version `1.2.6` so existing installations can detect the update.
+
+- Windows release builds open directly into the Subaroll window. FFmpeg and FFprobe run in the background without console windows. The EXE and MSI include both media tools and an offline WebView2 installer for systems missing the runtime.
 
 ## v1.1
 

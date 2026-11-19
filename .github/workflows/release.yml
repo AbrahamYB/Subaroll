@@ -91,3 +91,35 @@ jobs:
           updaterJsonPreferNsis: true
           releaseAssetNamePattern: "[name]_${{ steps.release_version.outputs.short }}_[arch][setup][ext]"
           args: ${{ matrix.args }}
+
+      - name: Verify Windows installer payloads
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bundle = "src-tauri/target/x86_64-pc-windows-msvc/release/bundle"
+          $setup = Get-ChildItem "$bundle/nsis" -Filter "*-setup.exe" | Select-Object -First 1
+          $msi = Get-ChildItem "$bundle/msi" -Filter "*.msi" | Select-Object -First 1
+          if (-not $setup -or -not $msi) { throw "Expected both Windows installers." }
+
+          $setupPath = Join-Path $env:RUNNER_TEMP "subaroll-nsis-check"
+          $msiPath = Join-Path $env:RUNNER_TEMP "subaroll-msi-check"
+          & 7z x $setup.FullName "-o$setupPath" -y
+          if ($LASTEXITCODE -ne 0) { throw "Could not extract the setup EXE." }
+          $msiProcess = Start-Process msiexec.exe -ArgumentList "/a `"$($msi.FullName)`" /qn TARGETDIR=`"$msiPath`"" -Wait -PassThru
+          if ($msiProcess.ExitCode -ne 0) { throw "Could not extract the MSI." }
+
+          foreach ($payload in @($setupPath, $msiPath)) {
+            $app = Get-ChildItem -LiteralPath $payload -Recurse -Filter "Subaroll.exe" | Select-Object -First 1
+            if (-not $app) { throw "Subaroll.exe is missing in $payload." }
+            $bytes = [IO.File]::ReadAllBytes($app.FullName)
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+            if ([BitConverter]::ToUInt16($bytes, ($peOffset + 92)) -ne 2) {
+              throw "Subaroll.exe in $payload is not a Windows GUI executable."
+            }
+            foreach ($tool in @("ffmpeg.exe", "ffprobe.exe")) {
+              $toolPath = Join-Path $app.DirectoryName $tool
+              if (-not (Test-Path -LiteralPath $toolPath)) { throw "$tool is missing beside Subaroll.exe in $payload." }
+              & $toolPath -version
+              if ($LASTEXITCODE -ne 0) { throw "$tool could not run from $payload." }
+            }
+          }
