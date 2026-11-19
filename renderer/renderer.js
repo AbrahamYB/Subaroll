@@ -56,6 +56,8 @@ const SETTINGS_KEY = 'subaroll.subtitleSettings';
 const LEGACY_SETTINGS_KEY = 'subtitleBurner.subtitleSettings';
 const COMPRESSION_CODEC_KEY = 'subaroll.compressionCodec';
 const LEGACY_COMPRESSION_CODEC_KEY = 'subtitleBurner.compressionCodec';
+const COMPRESSION_TARGET_KEY = 'subaroll.compressionTargetMB';
+const MODE_KEY = 'subaroll.mode';
 function saveSubtitleSettings() {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...settings(), settingsVersion: 4 }));
 }
@@ -63,7 +65,8 @@ function restoreSubtitleSettings() {
   try {
     const currentSettings = localStorage.getItem(SETTINGS_KEY);
     const existing = currentSettings || localStorage.getItem(LEGACY_SETTINGS_KEY);
-    const legacyQuality = Number(localStorage.getItem('subtitleBurner.encodingQuality'));
+    const legacyQualityValue = localStorage.getItem('subtitleBurner.encodingQuality');
+    const legacyQuality = legacyQualityValue === null ? NaN : Number(legacyQualityValue);
     const saved = existing ? JSON.parse(existing) : {
       delaySeconds: 0,
       positionPercent: 95,
@@ -72,14 +75,16 @@ function restoreSubtitleSettings() {
     };
     if (Number.isFinite(saved.delaySeconds)) elements.delay.value = String(Math.max(-5, Math.min(5, saved.delaySeconds)));
     if (Number.isFinite(saved.positionPercent)) {
-      const position = saved.settingsVersion === 2 ? saved.positionPercent : 95 + (saved.positionPercent - 100);
+      const position = saved.settingsVersion === 2 || saved.settingsVersion >= 4
+        ? saved.positionPercent
+        : 95 + (saved.positionPercent - 100);
       elements.position.value = String(Math.max(0, Math.min(100, position)));
     }
     if (Number.isFinite(saved.scalePercent)) elements.scale.value = String(Math.max(50, Math.min(180, saved.scalePercent)));
     if (Number.isFinite(saved.quality)) elements.quality.value = String(Math.max(60, Math.min(100, saved.quality)));
     if (['auto', 'nvenc', 'amf', 'qsv', 'software'].includes(saved.windowsEncoder)) elements.windowsEncoder.value = saved.windowsEncoder;
     if (['quality', 'balanced', 'fast'].includes(saved.windowsPreset)) elements.windowsPreset.value = saved.windowsPreset;
-    if (!currentSettings) saveSubtitleSettings();
+    if (saved.settingsVersion !== 4) saveSubtitleSettings();
   } catch (_) {}
   const position = Number(elements.position.value);
   elements.delayValue.textContent = `${Number(elements.delay.value).toFixed(2)} s`;
@@ -182,6 +187,7 @@ function updateAutomaticOutput() { state.outputPath = suggestOutput(); }
 function setMode(mode) {
   if (state.exporting) return;
   state.mode = mode === 'compress' ? 'compress' : 'subtitles';
+  localStorage.setItem(MODE_KEY, state.mode);
   const compressing = state.mode === 'compress';
   elements.subtitleMode.classList.toggle('active', !compressing);
   elements.compressMode.classList.toggle('active', compressing);
@@ -235,7 +241,6 @@ async function checkTools() {
         ? state.availableVideoEncoders.map(value => labels[value]).join(' + ') + ' detected'
         : 'CPU only';
       encoderPresetDescription();
-      saveSubtitleSettings();
     }
   } else {
     elements.encoderAvailability.textContent = windows ? 'Unavailable' : 'Windows only';
@@ -406,6 +411,8 @@ elements.subtitleMode.addEventListener('click', () => setMode('subtitles'));
 elements.compressMode.addEventListener('click', () => setMode('compress'));
 elements.targetSize.addEventListener('input', () => {
   if (state.mode !== 'compress') return;
+  const target = Number(elements.targetSize.value);
+  if (Number.isFinite(target) && target >= 1 && target <= 10000) localStorage.setItem(COMPRESSION_TARGET_KEY, String(target));
   updateAutomaticOutput();
   refreshReady();
 });
@@ -530,6 +537,11 @@ for (const target of [elements.videoPicker, elements.subtitlePicker]) {
 }
 
 restoreSubtitleSettings();
+const savedCompressionTarget = Number(localStorage.getItem(COMPRESSION_TARGET_KEY));
+if (Number.isFinite(savedCompressionTarget) && savedCompressionTarget >= 1 && savedCompressionTarget <= 10000) {
+  elements.targetSize.value = String(savedCompressionTarget);
+}
+setMode(localStorage.getItem(MODE_KEY));
 refreshQualityDisplay();
 checkTools();
 checkForUpdates();

@@ -4,7 +4,7 @@ Release history for Subaroll. Public releases use the `major.minor` format (`v1.
 
 ## v1.2
 
-**Summary:** Hardened the app's web content policy, serialized preview work, made export job tracking atomic, capped media-tool output and subtitle/font resource use, and pinned release workflow actions.
+**Summary:** Settings restore correctly on restart, controls fit better in the app window, and local macOS updates restart the installed app more reliably. v1.2 also hardens the WebView and limits resource use during preview and export.
 
 - Enabled a restrictive Content Security Policy for the bundled WebView, limiting scripts and connections to app-owned resources and Tauri IPC while preserving the app's dynamic preview styles.
 - Serialized preview rendering so rapid seeking or repeated adjustments keep at most one render in flight and only queue the latest requested preview. Preview frames have a bounded size.
@@ -12,9 +12,12 @@ Release history for Subaroll. Public releases use the `major.minor` format (`v1.
 - Bounded FFmpeg/FFprobe output captured in memory and capped subtitle text and adjacent-font files processed during inspection, preview, and export. Font symlinks are skipped.
 - Pinned GitHub Actions to immutable commit SHAs, disabled checkout credential persistence, and scoped the release write permission to the publishing job.
 - Kept public release tags and download naming in `major.minor` form. This release is `v1.2`; the app uses an internal SemVer version for update comparisons.
-- Follow-up within the same `v1.2` release: Windows GPU and preset controls now remain visible but disabled and clearly marked Windows-only on macOS. The workspace now respects the window height and preserves a 28px bottom inset, using the previous excess top inset. Internal updater version is now `1.2.2`; public release tag and download naming stay `v1.2`.
-- Additional follow-up within `v1.2`: the Discord size-target heading now wraps instead of colliding with the size controls at narrow window widths. Removed the duplicate compression attribution from the app UI; project credit remains in the GitHub repository. Removed Tauri's legacy Carbon-required flag and explicitly declared the macOS app principal for newer macOS launch compatibility. Internal updater version is `1.2.3`.
-- Additional follow-up within `v1.2`: the updater button and status messages now show the public `major.minor` version (for example, `v1.2`) while retaining internal patch versions for update ordering. Internal updater version is `1.2.4`.
+- On macOS, the Windows GPU and preset controls are disabled and labeled Windows only. Adjusted window and controls panel spacing to give the title bar buttons and bottom status row room.
+- The compression size heading wraps at narrow widths. Compression credit is listed in the repository.
+- Updated macOS bundle launch metadata. The local install script now waits for the old app to exit, builds the local bundle without updater artifacts, and opens the installed bundle through macOS Launch Services.
+- Subtitle delay, position, size, and quality restore on restart. Fixed a bug that subtracted five points from a saved subtitle position and prevented older settings from being migrated repeatedly.
+- The app remembers the last selected mode, compression target and codec, and Windows encoder and preset. GPU detection can use Auto when a saved encoder is unavailable without overwriting the saved preference.
+- The updater displays the public version, such as `v1.2`. This build uses internal version `1.2.5` so existing installations can detect the update.
 
 ## v1.1
 
