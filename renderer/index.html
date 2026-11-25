@@ -10,136 +10,121 @@
   <div class="window-drag-region" data-tauri-drag-region aria-hidden="true"></div>
   <main class="app-shell">
     <div class="stage-col" id="stageCol">
-      <div class="preview-slot">
-        <div id="previewStage" class="preview-stage">
-          <img id="previewFrame" class="preview-frame" alt="Video preview frame">
-          <div id="emptyPreview" class="empty-preview">
-            <div class="preview-icon">CC</div>
-            <strong>Exact rendered preview</strong>
-            <span>Choose a video</span>
-          </div>
-          <div id="previewSpinner" class="spinner" hidden></div>
+      <header class="workspace-bar">
+        <div class="mode-switch" role="group" aria-label="Export mode">
+          <button id="subtitleMode" class="active" type="button" aria-pressed="true">Burn subtitles</button>
+          <button id="compressMode" type="button" aria-pressed="false">Compress video</button>
         </div>
-        <div class="status-row">
-          <p id="status" class="status"></p>
-        </div>
-      </div>
-      <div class="seek-row">
-        <span id="seekCurrent">00:00</span>
-        <input id="seek" type="range" min="0" max="100" value="0" step="0.1" disabled>
-        <span id="seekDuration">00:00</span>
-      </div>
-      <p class="sr-only preview-note"></p>
-      <div class="sr-only"><p id="modeEyebrow">LIBASS BURN-IN</p><h1 id="modeTitle">Burn subtitles</h1></div>
+        <button id="updateButton" class="update-button" type="button" aria-live="polite">Check for updates</button>
+      </header>
 
-      <section class="dock panel" id="dock">
-        <div class="dock-enc">
-          <div class="side-slot">
-            <section id="windowsEncoderCard" class="encoder-card">
-              <div class="hd"><label>Encoder</label><output id="encoderAvailability" class="sr-only">Windows only</output></div>
-              <div id="encoderChips" class="chips" role="radiogroup" aria-label="Encoder">
-                <button type="button" class="chip on" data-value="auto" role="radio"><i class="dt"></i>Auto</button>
-                <button type="button" class="chip" data-value="nvenc" role="radio"><i class="dt"></i>NVIDIA</button>
-                <button type="button" class="chip" data-value="qsv" role="radio"><i class="dt"></i>Intel</button>
-                <button type="button" class="chip" data-value="amf" role="radio"><i class="dt"></i>AMD</button>
-                <button type="button" class="chip" data-value="videotoolbox" role="radio" title="Apple VideoToolbox"><i class="dt"></i>Apple</button>
-                <button type="button" class="chip" data-value="software" role="radio" title="CPU: x264 (H.264). Burn mode uses x265 for HDR and 10-bit video."><i class="dt"></i>CPU</button>
-              </div>
-              <select id="windowsEncoder" class="sr-only" disabled tabindex="-1" aria-hidden="true">
-                <option value="auto">Auto</option>
-                <option value="nvenc">NVIDIA NVENC</option>
-                <option value="amf">AMD AMF</option>
-                <option value="qsv">Intel Quick Sync</option>
-                <option value="videotoolbox">Apple VideoToolbox</option>
-                <option value="software">CPU software</option>
-              </select>
-              <p id="encoderHint" class="sr-only"></p>
-            </section>
+      <section class="monitor" aria-label="Video monitor">
+        <div class="preview-slot">
+          <div id="previewStage" class="preview-stage">
+            <img id="previewFrame" class="preview-frame" alt="Video preview frame">
+            <div id="positionGuide" class="position-guide" aria-hidden="true" hidden>
+              <div class="guide-line"><span id="guideValue"></span></div>
+            </div>
+            <div id="emptyPreview" class="empty-preview">
+              <span>Video preview</span>
+              <button id="emptyVideoPicker" type="button">Open a video…</button>
+            </div>
+            <div id="previewSpinner" class="spinner" role="status" aria-label="Rendering preview" hidden></div>
           </div>
-          <button id="updateButton" class="update-button" type="button">Check for updates</button>
+          <button id="positionGuideToggle" type="button" class="guide-toggle subtitle-only" aria-pressed="false" disabled>Position guide</button>
+          <div class="status-row">
+            <p id="status" class="status"></p>
+          </div>
         </div>
+        <div class="seek-row">
+          <span id="seekCurrent">00:00</span>
+          <input id="seek" aria-label="Preview time" type="range" min="0" max="100" value="0" step="0.1" disabled>
+          <span id="seekDuration">00:00</span>
+        </div>
+      </section>
 
-        <div class="panes">
-          <div id="paneBurn" class="pane subtitle-only">
-            <div class="pane-col">
-              <div class="slider" data-lo="Earlier" data-hi="Later" data-marks="0:0">
-                <div class="hd"><label for="delay">Subtitle delay</label><output id="delayValue">0.00 s</output></div>
+      <section class="dock" id="dock" aria-label="Video workspace">
+        <div class="dock-main">
+          <div class="input-files">
+            <label id="videoLabel" class="sr-only" for="videoPicker">Video</label>
+            <button id="videoPicker" class="file-picker" type="button" aria-labelledby="videoLabel videoName"><span id="videoName">Choose video…</span><b>Browse</b></button>
+            <label id="subtitleLabel" class="sr-only subtitle-only" for="subtitlePicker">Subtitles</label>
+            <button id="subtitlePicker" class="file-picker subtitle-only" type="button" aria-labelledby="subtitleLabel subtitleName"><span id="subtitleName">Choose subtitles…</span><b>Browse</b></button>
+          </div>
+          <section class="adjustments subtitle-only" aria-label="Subtitle adjustments">
+            <div class="adjustment-sliders">
+              <div class="slider" data-marks="0:No delay">
+                <div class="hd"><label for="delay">Delay</label><output id="delayValue" for="delay">0.00 s</output></div>
                 <input id="delay" type="range" min="-5" max="5" value="0" step="0.05">
               </div>
-              <div class="slider" data-lo="Top" data-hi="Bottom" data-marks="50:Middle">
-                <div class="hd"><label for="position">Position</label><output id="positionValue">Original</output></div>
+              <div class="slider" data-marks="50:Middle">
+                <div class="hd"><label for="position">Position</label><output id="positionValue" for="position">Original</output></div>
                 <input id="position" type="range" min="0" max="100" value="95" step="1">
               </div>
-            </div>
-            <div class="pane-col">
-              <div class="slider" data-lo="Smaller" data-hi="Larger" data-marks="100:Original">
-                <div class="hd"><label for="scale">Size</label><output id="scaleValue">100%</output></div>
+              <div class="slider" data-marks="100:Original">
+                <div class="hd"><label for="scale">Size</label><output id="scaleValue" for="scale">100%</output></div>
                 <input id="scale" type="range" min="50" max="200" value="100" step="1">
               </div>
-              <div class="slider" data-lo="Compact" data-hi="Max" data-marks="90:Recommended">
-                <div class="hd"><label for="quality">Encoding quality</label><output id="qualityValue">CQ 90</output></div>
-                <input id="quality" type="range" min="60" max="100" value="90" step="1">
-                <p id="qualityHint" class="sr-only"></p>
+            </div>
+          </section>
+
+          <section id="compressionOptions" class="adjustments compress-only" aria-label="Compression target" hidden>
+            <div class="slider" data-marks="25:25 MB;50:50 MB;100:100 MB;250:250 MB">
+              <div class="hd">
+                <h2><label for="targetRange">Target size</label></h2>
+                <label class="val-edit">
+                  <input id="targetSize" type="number" min="1" max="750" step="1" value="25" aria-label="Target size in megabytes">
+                  <span>MB</span>
+                </label>
               </div>
+              <input id="targetRange" type="range" min="1" max="750" value="25" step="1">
+            </div>
+            <div id="estimate" class="estimate">
+              <div><span>Resolution</span><b id="estRes">—</b></div>
+              <div><span>Source FPS</span><b id="estFps">—</b></div>
+              <div><span>Estimated bitrate</span><b id="estRate">—</b></div>
+            </div>
+            <small id="estNote" class="hint" aria-live="polite"></small>
+          </section>
+
+        </div>
+
+        <section class="dock-export" aria-labelledby="exportTitle">
+          <h2 id="exportTitle">Export</h2>
+          <div class="export-settings">
+            <div class="export-encoder">
+              <label for="windowsEncoder">Encoder</label>
+              <select id="windowsEncoder" disabled>
+                <option value="auto">Auto</option>
+              </select>
+            </div>
+            <div class="slider export-quality subtitle-only" data-marks="90:Recommended">
+              <div class="hd"><label for="quality">Encoding quality</label><output id="qualityValue" for="quality">CQ 90</output></div>
+              <input id="quality" aria-describedby="qualityHint" type="range" min="60" max="100" value="90" step="1">
+              <p id="qualityHint" class="sr-only"></p>
+            </div>
+            <div class="export-codec compress-only" hidden>
+              <label for="compressionCodec">Codec</label>
+              <select id="compressionCodec">
+                <option value="auto">Auto</option>
+                <option value="h264">H.264</option>
+              </select>
             </div>
           </div>
 
-          <div id="compressionOptions" class="pane compress-only" inert>
-            <div class="pane-col wide">
-              <div class="slider" data-lo="1 MB" data-hi="250 MB" data-marks="25:25;50:50;100:100">
-                <div class="hd">
-                  <label for="targetRange" title="Discord file-size target">Target size</label>
-                  <span class="val-edit">
-                    <input id="targetSize" type="number" min="1" max="250" step="1" value="25" aria-label="Target size in megabytes"><i>MB</i>
-                  </span>
-                  <span class="sr-only"><button id="targetDown" type="button" tabindex="-1">-</button><button id="targetUp" type="button" tabindex="-1">+</button></span>
-                </div>
-                <input id="targetRange" type="range" min="1" max="250" value="25" step="1">
-              </div>
-              <div id="estimate" class="estimate">
-                <div><span>Resolution</span><b id="estRes">-</b></div>
-                <div><span>Source FPS</span><b id="estFps">-</b></div>
-                <div><span>Video bitrate</span><b id="estRate">-</b></div>
-              </div>
-              <div class="codec-row">
-                <span>Codec</span>
-                <div id="codecChips" class="chips" role="radiogroup" aria-label="Codec">
-                  <button type="button" class="chip on" data-value="auto" role="radio">Auto</button>
-                  <button type="button" class="chip" data-value="av1" role="radio">AV1</button>
-                  <button type="button" class="chip" data-value="h264" role="radio">H.264</button>
-                </div>
-                <select id="compressionCodec" class="sr-only" tabindex="-1" aria-hidden="true">
-                  <option value="auto">Auto · prefer hardware AV1</option>
-                  <option value="av1">AV1 hardware · best quality</option>
-                  <option value="h264">H.264 · widest compatibility</option>
-                </select>
-                <p id="compressionCodecHint" class="sr-only"></p>
-                <span id="cpuNote" class="cpu-note" hidden>Under 1 Mbps: CPU (x264)</span>
-              </div>
-              <small id="estNote" class="hint">Resolution and bitrate adapt to the target. Source frame timing is preserved.</small>
+          <div class="export-commit">
+            <div id="progressWrap" class="progress-wrap" hidden>
+              <div class="progress-track"><div id="progressBar"></div></div>
+              <strong id="progressValue">0%</strong>
+            </div>
+            <div class="actions">
+              <button id="cancelButton" class="secondary" type="button" hidden>Cancel</button>
+              <button id="testButton" class="secondary test-button" type="button" disabled>30s test</button>
+              <button id="exportButton" class="primary" type="button" disabled>Burn subtitles</button>
             </div>
           </div>
-        </div>
+        </section>
 
-        <div class="dock-files">
-          <label class="sr-only" for="videoPicker">Video</label>
-          <button id="videoPicker" class="file-picker" type="button"><span id="videoName">Choose video…</span><b>Browse</b></button>
-          <label class="sr-only subtitle-only" for="subtitlePicker">Subtitles</label>
-          <button id="subtitlePicker" class="file-picker subtitle-only" type="button"><span id="subtitleName">Choose SRT, ASS, SSA or VTT…</span><b>Browse</b></button>
-          <div class="mode-switch" role="group" aria-label="Export mode">
-            <button id="subtitleMode" class="active" type="button">Burn</button>
-            <button id="compressMode" type="button">Compress</button>
-          </div>
-          <div id="progressWrap" class="progress-wrap" hidden>
-            <div class="progress-copy"><span>Working…</span><strong id="progressValue">0%</strong></div>
-            <div class="progress-track"><div id="progressBar"></div></div>
-          </div>
-          <div class="actions">
-            <button id="cancelButton" class="secondary" hidden>Cancel</button>
-            <button id="testButton" class="secondary test-button" disabled>30s test</button>
-            <button id="exportButton" class="primary" disabled>Burn subtitles</button>
-          </div>
-        </div>
       </section>
     </div>
   </main>

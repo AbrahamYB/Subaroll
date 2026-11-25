@@ -6,6 +6,16 @@ Release history for Subaroll. Public releases use the `major.minor` format (`v1.
 
 Subaroll v1.3 brings a redesigned workspace, automatic subtitle matching, and rebuilt target-size compression to Apple silicon Macs and Windows 11 x64.
 
+
+### Additional improvements
+
+- Refreshed the vertical workspace with rounded neutral controls and added a draggable subtitle-position guide. Burn and Compress controls switch together, with smoother slider dragging and less unused space. Encoder and codec menus show available choices.
+- Raised the compression target limit to 750 MB and added a 250 MB slider snap point.
+- Improved planning for multi-hour videos and stopped reserving audio bitrate for silent sources. The estimate shows the required minimum for small targets and can retain resolutions above 1080p when the budget supports them.
+- Long NVIDIA exports use bitrate control to avoid repeated full-length quality passes. Long CPU jobs use fewer encoder and filter threads, and hardware failures can fall back to CPU encoding.
+- Burn and Compress tests export the entire clip when it runs 30 seconds or less. Longer compression samples use the full export’s planned bitrate and resolution.
+- Preserved source frame timing across frame rates. Compression adapts resolution to the size budget, and subtitle burn-in supports 8K with a CPU fallback when needed.
+
 ### Redesign and compression rework
 
 - Rebuilt the workspace around a fixed-size 16:9 preview with a three-column dock for encoders, sliders, file selection, and export actions. Burn and Compress switch within the same dock, the app starts in Burn mode, and Check for updates sits below the encoder list.

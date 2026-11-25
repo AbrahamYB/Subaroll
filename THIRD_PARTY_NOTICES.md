@@ -21,3 +21,9 @@ Its source code is available from [FFmpeg](https://ffmpeg.org/download.html) and
 the exact build scripts are available from
 [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds). Subaroll
 invokes FFmpeg as a subprocess and does not modify FFmpeg.
+
+## Interface fonts
+
+IBM Plex Sans and IBM Plex Mono are distributed under the SIL Open
+Font License 1.1. The font files and license texts are bundled in
+[renderer/fonts](renderer/fonts).

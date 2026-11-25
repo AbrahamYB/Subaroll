@@ -70,6 +70,17 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: echo "short=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Find existing release
+        if: github.event_name == 'workflow_dispatch'
+        id: existing_release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .id)
+          echo "id=$release_id" >> "$GITHUB_OUTPUT"
+
       - name: Build and upload native installer
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f
         env:
@@ -79,6 +90,7 @@ jobs:
         with:
           tagName: ${{ inputs.release_tag || github.ref_name }}
           releaseName: Subaroll ${{ inputs.release_tag || github.ref_name }}
+          releaseId: ${{ steps.existing_release.outputs.id }}
           releaseDraft: true
           prerelease: false
           uploadUpdaterJson: true
