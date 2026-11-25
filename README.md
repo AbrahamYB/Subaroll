@@ -19,7 +19,8 @@ Subaroll burns external subtitle files into video or compresses video to a chose
 - Resolution is retained when the budget can support it. Higher frame rates are kept when the bitrate budget allows; frame rate is reduced only when required by a constrained target.
 - On Windows, Auto prefers a usable hardware AV1 encoder, then falls back to compatible hardware encoding or CPU encoding. NVIDIA NVENC, Intel Quick Sync, and AMD AMF options are detected and checked before use.
 - NVIDIA compression uses CQP 20 with a calculated correction pass when necessary to meet the size target. CPU encoding uses a slower two-pass mode for tighter size targeting.
-- On macOS, subtitle burn-in uses VideoToolbox hardware encoding. Compression uses FFmpeg's CPU encoder.
+- On macOS, subtitle burn-in uses VideoToolbox hardware encoding. Compression can use Apple VideoToolbox or the CPU encoder (x264).
+- On Windows, below about 1 Mbps of video, compression uses the CPU encoder (x264, two-pass): the GPU encoders cannot hold a size that small, and x264 can. On macOS, Apple VideoToolbox is tried first at any size, with the CPU encoder as the fallback if the size is missed.
 
 ## Install 1.1
 

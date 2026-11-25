@@ -9,5 +9,5 @@ const binary = process.platform === 'win32'
   ? path.join(__dirname, '..', 'node_modules', '.bin', 'tauri.cmd')
   : path.join(__dirname, '..', 'node_modules', '.bin', 'tauri');
 const env = { ...process.env, PATH: `${cargoBin}${path.delimiter}${process.env.PATH || ''}` };
-const result = spawnSync(binary, process.argv.slice(2), { stdio: 'inherit', env });
+const result = spawnSync(binary, process.argv.slice(2), { stdio: 'inherit', env, shell: process.platform === 'win32' }); // Node 22 refuses to spawn .cmd without a shell
 process.exit(result.status ?? 1);

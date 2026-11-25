@@ -2,6 +2,32 @@
 
 Release history for Subaroll. Public releases use the `major.minor` format (`v1.0`, `v1.1`, `v1.2`).
 
+## Unreleased
+
+**Summary:** Landscape layout with notched pill sliders, automatic subtitle matching, and a reworked Compress mode with a strict size ceiling. Nothing here has run on a real Mac yet.
+
+### Layout and controls
+- Fixed-size window (880x764, 792 on macOS): a 16:9 preview with a three-column dock under it. Encoders are on the left, sliders in the middle, files, the Burn/Compress switch and actions on the right, and Check for updates sits in the bottom-left of the dock. The window can't be resized or maximized, and it always starts in Burn mode.
+- Pill sliders with a dotted fill and a capsule thumb. They slide continuously. Landmarks (Middle, Original, Recommended) act as a soft detent over a fixed pixel zone that turns the track blue.
+- Burn mode no longer has the CTT/Balanced/Fast preset dropdown. Encoders always use their best preset, and CQ is the only quality control.
+- Picking a video loads a subtitle file from the same folder, or a `Subs`/`Subtitles` folder, when the name or the show, season and episode match (`find_subtitle`). A subtitle you chose yourself is never replaced.
+
+### Compress mode
+- Maximum target is 250 MB. The size you pick is a ceiling and is never exceeded. From 5 MB up, 1 MB means 1,000,000 bytes minus 1%. Below 5 MB it stays 1,048,576 bytes.
+- Targets that leave under 150 kbps of video are refused up front, with the smallest size that works.
+- A live estimate (resolution, frame rate, video bitrate) comes from the same plan the export uses (`plan_compression`).
+- Encoder choice (NVIDIA, Intel, AMD, CPU, and Apple VideoToolbox on macOS) and a codec row (Auto, AV1, H.264). The CPU option is x264 (H.264) two-pass.
+- On Windows, below 1 Mbps of video every choice goes straight to x264 two-pass, because the hardware encoders cannot hold a size that small. On macOS VideoToolbox is tried first.
+- NVIDIA constant-QP compression searches for the largest file that fits (up to 4 attempts) instead of a single correction. If no setting fits, it falls back to bitrate control, then to x264. Bitrate-controlled encoders get one corrective re-encode, then x264.
+- Thin 60 fps H.264 budgets (about 2.4 to 3.2 Mbps) now plan 720p60 instead of 900p60, which measured cleaner at the same size.
+- 30-second test button in Compress mode, with the size budget scaled to the clip.
+- The video bitrate is capped at 1.5x the source's so tiny sources are not bloated.
+
+### Development
+- `npm start` works on Node 22 on Windows. `cargo test` runs the unit tests.
+- Real-ffmpeg checks are ignored by default: `cargo test real_compression -- --ignored --nocapture`. The ratio test reads `SUBAROLL_TEST_SOURCE`, `SUBAROLL_TEST_OUT`, and optionally `SUBAROLL_TEST_MB`, `SUBAROLL_TEST_RATIO` and `SUBAROLL_TEST_ENCODER`.
+- The whole compression job is now `compress_video`, independent of the Tauri window, so it can be tested from a terminal.
+
 ## v1.2
 
 **Summary:** Settings restore correctly on restart, controls fit better in the app window, and local macOS updates restart the installed app more reliably. v1.2 also hardens the WebView and limits resource use during preview and export.

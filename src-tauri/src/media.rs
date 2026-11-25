@@ -155,6 +155,13 @@ pub struct CompressionInput {
     target_size_mb: f64,
     #[serde(default = "default_compression_codec")]
     codec_preference: String,
+    /// "auto", "nvenc", "qsv", "amf" or "software" (the CPU, x264).
+    #[serde(default = "default_windows_encoder")]
+    encoder_preference: String,
+    #[serde(default)]
+    clip_start: f64,
+    #[serde(default)]
+    clip_duration: f64,
 }
 
 fn default_compression_codec() -> String {
@@ -423,6 +430,12 @@ pub fn tool_status(state: State<AppState>) -> ToolStatus {
         Ok(t) => {
             let available_video_encoders = if cfg!(target_os = "windows") {
                 available_windows_encoders(&t.ffmpeg)
+            } else if cfg!(target_os = "macos") {
+                if encoder_usable(&t.ffmpeg, "h264_videotoolbox", false) {
+                    vec!["videotoolbox".to_owned()]
+                } else {
+                    Vec::new()
+                }
             } else {
                 vec![t.video_encoder.clone()]
             };
@@ -483,6 +496,74 @@ pub fn choose_subtitle() -> String {
         .set_title("Choose subtitles")
         .add_filter("Subtitles", SUBTITLE_EXTENSIONS)
         .pick_file()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// (title, season, episode) from a file stem; season is None for "- 07" / "EP07" forms.
+fn episode_key(stem: &str) -> Option<(String, Option<u32>, u32)> {
+    let se = Regex::new(r"(?i)(?:^|[^a-z0-9])s(\d{1,2})[\s._-]*e(\d{1,3})(?:[^0-9]|$)").unwrap();
+    let nxn = Regex::new(r"(?i)(?:^|[^a-z0-9])(\d{1,2})x(\d{2,3})(?:[^0-9]|$)").unwrap();
+    let bare = Regex::new(r"(?i)(?:\s-\s*|[\s._]ep?(?:isode)?[\s._-]*)(\d{1,3})(?:v\d)?(?:[^0-9]|$)").unwrap();
+    let (m, season, ep) = if let Some(c) = se.captures(stem).or_else(|| nxn.captures(stem)) {
+        (c.get(0)?, c[1].parse().ok(), c[2].parse().ok()?)
+    } else {
+        let c = bare.captures(stem)?;
+        (c.get(0)?, None, c[1].parse().ok()?)
+    };
+    let groups = Regex::new(r"\[[^\]]*\]|\([^)]*\)").unwrap();
+    let title: String = groups
+        .replace_all(&stem[..m.start()], "")
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    Some((title, season, ep))
+}
+
+/// Same-name subtitle beside the video (or in Subs/Subtitles), else one with the same
+/// series + season + episode. Offline, read-only; a lone "episode" never matches an S/E video.
+fn find_sidecar(video: &Path) -> Option<PathBuf> {
+    let dir = video.parent()?;
+    let stem = video.file_stem()?.to_string_lossy().to_lowercase();
+    let want = episode_key(&stem);
+    let mut best: Option<(u8, usize, String, PathBuf)> = None;
+    for folder in [dir.to_path_buf(), dir.join("Subs"), dir.join("Subtitles")] {
+        let Ok(entries) = fs::read_dir(&folder) else { continue };
+        for entry in entries.flatten().take(5000) {
+            if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                continue;
+            }
+            let path = entry.path();
+            let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+            let Some(ext_rank) = SUBTITLE_EXTENSIONS.iter().position(|e| *e == ext) else { continue };
+            let name = path.file_stem()?.to_string_lossy().to_lowercase();
+            // "ep.en" (language suffix) still counts as the same name
+            let exact = name == stem || name.strip_prefix(&format!("{stem}.")).is_some();
+            let matched = exact
+                || match (&want, episode_key(&name)) {
+                    (Some((vt, vs, ve)), Some((st, ss, se))) => {
+                        ve == &se
+                            && vs == &ss
+                            && (vt.is_empty() || st.is_empty() || vt.contains(&st) || st.contains(vt))
+                    }
+                    _ => false,
+                };
+            if !matched {
+                continue;
+            }
+            let key = (u8::from(!exact), ext_rank, name, path);
+            if best.as_ref().map_or(true, |b| (key.0, key.1, &key.2) < (b.0, b.1, &b.2)) {
+                best = Some(key);
+            }
+        }
+    }
+    best.map(|b| b.3)
+}
+
+#[tauri::command]
+pub fn find_subtitle(video_path: String) -> String {
+    find_sidecar(Path::new(&video_path))
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default()
 }
@@ -1545,7 +1626,7 @@ fn run_progress(
     duration: f64,
     base: f64,
     span: f64,
-    window: &WebviewWindow,
+    emit: &dyn Fn(f64),
     active: &Arc<Mutex<Option<u32>>>,
 ) -> Result<(), String> {
     let mut child = background_command(command)
@@ -1569,10 +1650,7 @@ fn run_progress(
                 .or_else(|| line.strip_prefix("out_time_ms="))
             {
                 if let Ok(us) = v.parse::<f64>() {
-                    let _ = window.emit(
-                        "export-progress",
-                        base + (us / 1_000_000.0 / duration.max(0.1)).clamp(0.0, 1.0) * span,
-                    );
+                    emit(base + (us / 1_000_000.0 / duration.max(0.1)).clamp(0.0, 1.0) * span);
                 }
             }
         }
@@ -1603,6 +1681,9 @@ pub async fn start_export(
     let active = state.active_pid.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _job_guard = job_guard;
+        let emit = |v: f64| {
+            let _ = window.emit("export-progress", v);
+        };
         let m = match input.metadata {
             Some(m) => m,
             None => probe_media(&tools.ffprobe, &input.video_path)?,
@@ -1692,7 +1773,7 @@ pub async fn start_export(
             if duration > 0.0 { duration } else { m.duration },
             0.0,
             1.0,
-            &window,
+            &emit,
             &active,
         )?;
         let out = probe_media(&tools.ffprobe, &input.output_path)?;
@@ -1734,7 +1815,7 @@ pub async fn start_export(
                 m.bit_rate as f64 / 1_000_000.0
             ));
         }
-        let _ = window.emit("export-progress", 1.0);
+        emit(1.0);
         Ok(ExportResult {
             output: input.output_path,
             font_count: p.font_count,
@@ -1752,17 +1833,78 @@ pub async fn start_export(
     .map_err(|e| e.to_string())?
 }
 
-fn compression_plan(m: &MediaMetadata, mb: f64) -> CompressionPlan {
-    let target = (mb.clamp(1.0, 10000.0) * 1024.0 * 1024.0) as u64;
-    let total = ((target as f64 * 8.0 / m.duration.max(0.1)) * 0.96) as u64;
-    let audio = if total >= 1_500_000 {
+const MAX_COMPRESSION_MB: f64 = 250.0;
+// Below this even 480p is unwatchable, so smaller targets are refused instead of encoded badly.
+const MIN_VIDEO_BITRATE: u64 = 150_000;
+const SIZE_BUDGET: f64 = 0.96;
+
+fn audio_bitrate_for(total: u64) -> u64 {
+    if total >= 1_500_000 {
         128_000
     } else if total >= 700_000 {
         96_000
     } else {
         64_000
-    };
-    let video = total.saturating_sub(audio).max(120_000);
+    }
+}
+
+/// Targets below this keep the plain size (small files are not worth squeezing for a margin).
+const SAFE_MARGIN_FROM_MB: f64 = 5.0;
+
+/// The byte ceiling for a picked size. From 5 MB up, "MB" means 1,000,000 bytes (what upload limits
+/// use) minus 1% for container overhead, so the file also fits services that count that way.
+/// Below 5 MB it stays 1 MB = 1,048,576 bytes.
+fn ceiling_bytes(mb: f64) -> u64 {
+    if mb >= SAFE_MARGIN_FROM_MB {
+        (mb * 1_000_000.0 * 0.99) as u64
+    } else {
+        (mb * 1_048_576.0) as u64
+    }
+}
+
+/// Smallest target (whole MB) whose ceiling still leaves the minimum video bitrate at this length.
+fn min_target_mb(duration: f64) -> f64 {
+    let needed = (MIN_VIDEO_BITRATE + 64_000) as f64 * duration.max(0.1) / 8.0 / SIZE_BUDGET;
+    let mut mb = 1.0;
+    while (ceiling_bytes(mb) as f64) < needed && mb < 100_000.0 {
+        mb += 1.0;
+    }
+    mb
+}
+
+/// Refuse targets that would crash the planner, exceed the limit, or force an unwatchable bitrate.
+fn check_compression_target(m: &MediaMetadata, mb: f64) -> Result<(), String> {
+    if !mb.is_finite() || !(1.0..=MAX_COMPRESSION_MB).contains(&mb) {
+        return Err(format!("Choose a target size between 1 and {MAX_COMPRESSION_MB} MB."));
+    }
+    if !m.duration.is_finite() || m.duration <= 0.0 {
+        return Err("Couldn't read this video's length, so a target size can't be planned.".into());
+    }
+    let total = (ceiling_bytes(mb) as f64 * 8.0 / m.duration * SIZE_BUDGET) as u64;
+    if total.saturating_sub(audio_bitrate_for(total)) < MIN_VIDEO_BITRATE {
+        return Err(format!(
+            "{mb} MB is too small for this video's length. It needs at least {} MB (under 150 kbps of video is refused).",
+            min_target_mb(m.duration)
+        ));
+    }
+    Ok(())
+}
+
+fn compression_plan(m: &MediaMetadata, mb: f64) -> CompressionPlan {
+    compression_plan_bytes(m, ceiling_bytes(mb.clamp(1.0, MAX_COMPRESSION_MB)))
+}
+
+fn compression_plan_bytes(m: &MediaMetadata, target: u64) -> CompressionPlan {
+    let total = ((target as f64 * 8.0 / m.duration.max(0.1)) * SIZE_BUDGET) as u64;
+    let audio = audio_bitrate_for(total);
+    let mut video = total.saturating_sub(audio).max(MIN_VIDEO_BITRATE);
+    let mut target = target;
+    // Spending far more than the source already has only bloats the file; keep headroom for codec differences.
+    if m.bit_rate > 0 && video as f64 > m.bit_rate as f64 * 1.5 {
+        video = ((m.bit_rate as f64 * 1.5) as u64).max(MIN_VIDEO_BITRATE);
+        // The size goal shrinks with it, otherwise constant-QP encoders would chase the unreachable target.
+        target = target.min(((video + audio) as f64 * m.duration.max(0.1) / 8.0 / SIZE_BUDGET) as u64);
+    }
     let (max_h, output_fps) = compression_geometry(video, false, fps(&m.fps));
     CompressionPlan {
         target_bytes: target,
@@ -1772,6 +1914,42 @@ fn compression_plan(m: &MediaMetadata, mb: f64) -> CompressionPlan {
         output_height: m.height.min(max_h),
         output_fps,
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompressionEstimate {
+    video_bitrate: u64,
+    output_height: u64,
+    output_fps: f64,
+    min_mb: f64,
+    uses_cpu: bool,
+}
+
+/// Live estimate for the UI. Errors carry the same message the export would fail with.
+#[tauri::command]
+pub fn plan_compression(
+    metadata: MediaMetadata,
+    target_size_mb: f64,
+    av1: bool,
+    encoder_preference: String,
+) -> Result<CompressionEstimate, String> {
+    check_compression_target(&metadata, target_size_mb)?;
+    let plan = compression_plan(&metadata, target_size_mb);
+    let uses_cpu = use_cpu_encoder(plan.video_bitrate, &encoder_preference);
+    let (mut height, mut output_fps) = (plan.output_height, plan.output_fps);
+    if av1 && !uses_cpu {
+        let (max_height, rate) = compression_geometry(plan.video_bitrate, true, fps(&metadata.fps));
+        height = metadata.height.min(max_height);
+        output_fps = rate;
+    }
+    Ok(CompressionEstimate {
+        video_bitrate: plan.video_bitrate,
+        output_height: height,
+        output_fps,
+        min_mb: min_target_mb(metadata.duration),
+        uses_cpu,
+    })
 }
 
 fn compression_height_for_bitrate(video_bitrate: u64, av1: bool) -> u64 {
@@ -1812,6 +1990,10 @@ fn compression_geometry(video_bitrate: u64, av1: bool, source_fps: f64) -> (u64,
             compression_height_for_bitrate(video_bitrate, av1),
             reduced_fps,
         )
+    } else if !av1 && source_fps > 30.0 && height_at_source_fps >= 900 && rate_at_source_fps < 1_600_000 {
+        // Fast 60 fps footage on a thin H.264 budget (about 2.4-3.2 Mbps): 720p measured cleaner than 900p
+        // at the same file size (SSIM 0.893 vs 0.879 on a Rocket League capture), so spend the bits on fewer pixels.
+        (720, source_fps)
     } else {
         (height_at_source_fps, source_fps)
     }
@@ -1857,6 +2039,9 @@ fn compression_hardware_recipe_with_qp(
         ]
     } else if encoder.ends_with("_qsv") {
         vec!["-c:v", encoder, "-preset", "slow"]
+    } else if encoder.ends_with("_videotoolbox") {
+        // Average-bitrate mode. Explicit -1 keeps FFmpeg's old qmin/qmax defaults from capping the bitrate.
+        vec!["-c:v", encoder, "-profile:v", "high", "-realtime", "0", "-qmin", "-1", "-qmax", "-1"]
     } else {
         vec!["-c:v", encoder, "-quality", "quality", "-rc", "vbr_peak"]
     }
@@ -1888,6 +2073,51 @@ fn compression_hardware_recipe_with_qp(
         hardware: true,
         nvenc_qp: encoder.ends_with("_nvenc").then_some(nvenc_qp),
     }
+}
+
+/// Below this video bitrate, hardware encoders cannot hold a size ceiling (NVIDIA failed at 0.44 and 0.19 Mbps and
+/// Quick Sync at 0.19 Mbps in testing; NVIDIA worked at 1.5 Mbps), so whatever encoder is picked, the job goes
+/// straight to x264 two-pass instead of failing first. The bitrate is always planned before an encoder is chosen.
+const HARDWARE_MIN_VIDEO_BITRATE: u64 = 1_000_000;
+
+/// macOS is exempt: Apple VideoToolbox has no documented failure at low bitrates and is fast, so it is tried first
+/// (the corrective re-encode and the x264 fallback still catch a miss). "CPU" always means x264.
+fn use_cpu_encoder(video_bitrate: u64, encoder_preference: &str) -> bool {
+    encoder_preference == "software"
+        || (video_bitrate < HARDWARE_MIN_VIDEO_BITRATE && !cfg!(target_os = "macos"))
+}
+
+/// Bitrate-controlled NVENC, used when no constant-QP setting fits under the size ceiling.
+fn nvenc_vbr_args(encoder: &str, video_bitrate: u64) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "-c:v",
+        encoder,
+        "-preset",
+        "p5",
+        "-tune",
+        "hq",
+        "-rc",
+        "vbr",
+        "-b:v",
+        &video_bitrate.to_string(),
+        "-maxrate",
+        &((video_bitrate as f64 * 1.25) as u64).to_string(),
+        "-bufsize",
+        &(video_bitrate * 2).to_string(),
+        "-multipass",
+        "qres",
+        "-spatial-aq",
+        "1",
+        "-pix_fmt",
+        "yuv420p",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    if encoder == "h264_nvenc" {
+        args.extend(["-bf".into(), "3".into(), "-b_ref_mode".into(), "middle".into()]);
+    }
+    args
 }
 
 fn compression_recipe_usable(
@@ -1928,11 +2158,27 @@ fn automatic_compression_encoder(
     width: u64,
     height: u64,
     codec_preference: &str,
+    encoder_preference: &str,
 ) -> CompressionEncoder {
+    if use_cpu_encoder(video_bitrate, encoder_preference) {
+        return CompressionEncoder {
+            name: "libx264".into(),
+            args: Vec::new(),
+            hardware: false,
+            nvenc_qp: None,
+        };
+    }
+    let allowed = |encoder: &str| match encoder_preference {
+        "nvenc" => encoder.ends_with("_nvenc"),
+        "qsv" => encoder.ends_with("_qsv"),
+        "amf" => encoder.ends_with("_amf"),
+        "videotoolbox" => encoder.ends_with("_videotoolbox"),
+        _ => true,
+    };
     if cfg!(target_os = "windows") {
         if codec_preference != "h264" {
             for encoder in ["av1_nvenc", "av1_qsv", "av1_amf"] {
-                if supports_encoder(ffmpeg, encoder) {
+                if allowed(encoder) && supports_encoder(ffmpeg, encoder) {
                     let recipe = compression_hardware_recipe(encoder, video_bitrate);
                     if compression_recipe_usable(ffmpeg, &recipe, width, height) {
                         return recipe;
@@ -1941,12 +2187,18 @@ fn automatic_compression_encoder(
             }
         }
         for encoder in ["h264_nvenc", "h264_qsv", "h264_amf"] {
-            if supports_encoder(ffmpeg, encoder) {
+            if allowed(encoder) && supports_encoder(ffmpeg, encoder) {
                 let recipe = compression_hardware_recipe(encoder, video_bitrate);
                 if compression_recipe_usable(ffmpeg, &recipe, width, height) {
                     return recipe;
                 }
             }
+        }
+    }
+    if cfg!(target_os = "macos") && allowed("h264_videotoolbox") && supports_encoder(ffmpeg, "h264_videotoolbox") {
+        let recipe = compression_hardware_recipe("h264_videotoolbox", video_bitrate);
+        if compression_recipe_usable(ffmpeg, &recipe, width, height) {
+            return recipe;
         }
     }
     CompressionEncoder {
@@ -1970,6 +2222,378 @@ fn cpu_compression_tuning(logical_cores: usize) -> (&'static str, usize) {
     (preset, threads)
 }
 
+const NVENC_QP_MIN: u64 = 16;
+const NVENC_QP_MAX: u64 = 42;
+const NVENC_MAX_ATTEMPTS: usize = 4;
+
+/// Next constant-QP to try so the file lands just under the target. Uses the measured (qp, bytes)
+/// points on a log scale (about half the size every 6 QP until two points give a real slope).
+/// Returns None when the last result is already within -7%..0% of the target (never over) or nothing new is worth trying.
+fn next_nvenc_qp(tried: &[(u64, u64)], target_bytes: u64) -> Option<u64> {
+    let &(qp, bytes) = tried.last()?;
+    let target = target_bytes as f64;
+    if (target * 0.93..=target).contains(&(bytes as f64)) {
+        return None;
+    }
+    let default_slope = std::f64::consts::LN_2 / 6.0;
+    let slope = match tried.len().checked_sub(2).map(|i| tried[i]) {
+        Some((q0, b0)) if q0 != qp && b0 > 0 && bytes > 0 => {
+            ((b0 as f64 / bytes as f64).ln() / (qp as f64 - q0 as f64)).clamp(0.06, 0.2)
+        }
+        _ => default_slope,
+    };
+    let step = ((bytes as f64 / (target * 0.97)).ln() / slope).round();
+    let mut next = (qp as f64 + step).clamp(NVENC_QP_MIN as f64, NVENC_QP_MAX as f64) as u64;
+    if tried.iter().any(|&(q, _)| q == next) {
+        // The model rounded onto a QP we already have: step one notch in the needed direction.
+        next = if bytes as f64 > target { qp + 1 } else { qp.saturating_sub(1) };
+        if !(NVENC_QP_MIN..=NVENC_QP_MAX).contains(&next) || tried.iter().any(|&(q, _)| q == next) {
+            return None;
+        }
+    }
+    Some(next)
+}
+
+/// The whole compression job, independent of the Tauri window so it can be tested from the terminal.
+fn compress_video(
+    tools: &Tools,
+    input: CompressionInput,
+    active: &Arc<Mutex<Option<u32>>>,
+    emit: &dyn Fn(f64),
+) -> Result<CompressionResult, String> {
+    let mut m = match input.metadata {
+        Some(m) => m,
+        None => probe_media(&tools.ffprobe, &input.video_path)?,
+    };
+    check_compression_target(&m, input.target_size_mb)?;
+    // A short test clip gets the same bitrate as the full encode: scale the size budget to the clip.
+    let target_size_mb = input.target_size_mb;
+    let mut target_bytes = ceiling_bytes(input.target_size_mb);
+    let mut clip_args: Vec<String> = Vec::new();
+    if input.clip_duration > 0.0 && m.duration > 0.0 {
+        let start = input.clip_start.max(0.0).min((m.duration - 1.0).max(0.0));
+        let len = input.clip_duration.max(0.1).min(m.duration - start);
+        target_bytes = (target_bytes as f64 * len / m.duration) as u64;
+        m.duration = len;
+        clip_args = vec!["-ss".into(), fmt(start), "-t".into(), fmt(len)];
+    }
+    let mut plan = compression_plan_bytes(&m, target_bytes);
+    let probe_height = m.height.min(1080);
+    let probe_width =
+        ((m.width as f64 * probe_height as f64 / m.height.max(1) as f64).round() as u64).max(2)
+            & !1;
+    let mut encoder = automatic_compression_encoder(
+        &tools.ffmpeg,
+        plan.video_bitrate,
+        probe_width,
+        probe_height,
+        &input.codec_preference,
+        &input.encoder_preference,
+    );
+    if encoder.name.starts_with("av1_") {
+        let (max_height, output_fps) =
+            compression_geometry(plan.video_bitrate, true, fps(&m.fps));
+        plan.output_height = m.height.min(max_height);
+        plan.output_fps = output_fps;
+    }
+    let dir = tempfile::Builder::new()
+        .prefix("SubarollCompress-")
+        .tempdir()
+        .map_err(|e| e.to_string())?;
+    let pass = dir.path().join("pass");
+    let mut filters = Vec::new();
+    if m.is_hdr {
+        filters.extend(
+            [
+                "zscale=t=linear:npl=100",
+                "format=gbrpf32le",
+                "zscale=p=bt709",
+                "tonemap=hable:desat=0",
+                "zscale=t=bt709:m=bt709:r=tv",
+            ]
+            .map(str::to_owned),
+        )
+    }
+    if plan.output_height < m.height {
+        filters.push(format!("scale=-2:{}:flags=lanczos", plan.output_height))
+    }
+    if plan.output_fps < fps(&m.fps) - 0.01 {
+        filters.push(format!("fps={}", fmt(plan.output_fps)))
+    }
+    filters.push("format=yuv420p".into());
+    let mut common = vec![
+        "-hide_banner".into(),
+        "-y".into(),
+        "-noautorotate".into(),
+    ];
+    common.extend(clip_args);
+    common.extend([
+        "-i".into(),
+        input.video_path.clone(),
+        "-map".into(),
+        "0:v:0".into(),
+        "-vf".into(),
+        filters.join(","),
+    ]);
+    let common_base = common.clone();
+    let mut final_args = if encoder.hardware {
+        common.extend(encoder.args.clone());
+        common
+    } else {
+        let logical_cores = std::thread::available_parallelism()
+            .map(|value| value.get())
+            .unwrap_or(4);
+        let (cpu_preset, cpu_threads) = cpu_compression_tuning(logical_cores);
+        common.extend([
+            "-c:v".into(),
+            "libx264".into(),
+            "-preset".into(),
+            cpu_preset.into(),
+            "-threads".into(),
+            cpu_threads.to_string(),
+            "-b:v".into(),
+            plan.video_bitrate.to_string(),
+            "-maxrate".into(),
+            ((plan.video_bitrate as f64 * 1.25) as u64).to_string(),
+            "-bufsize".into(),
+            (plan.video_bitrate * 2).to_string(),
+            "-passlogfile".into(),
+            pass.to_string_lossy().into_owned(),
+        ]);
+        let mut p1 = common.clone();
+        p1.extend([
+            "-pass".into(),
+            "1".into(),
+            "-an".into(),
+            "-progress".into(),
+            "pipe:1".into(),
+            "-nostats".into(),
+            "-f".into(),
+            "null".into(),
+            "-".into(),
+        ]);
+        run_progress(&tools.ffmpeg, &p1, m.duration, 0.0, 0.5, emit, active)?;
+        common.extend(["-pass".into(), "2".into()]);
+        common
+    };
+    let append_output = |args: &mut Vec<String>, out: &str| {
+        args.extend([
+            "-map".into(),
+            "0:a:0?".into(),
+            "-c:a".into(),
+            "aac".into(),
+            "-b:a".into(),
+            plan.audio_bitrate.to_string(),
+            "-map_metadata".into(),
+            "0".into(),
+            "-map_chapters".into(),
+            "0".into(),
+            "-movflags".into(),
+            "+faststart".into(),
+            "-progress".into(),
+            "pipe:1".into(),
+            "-nostats".into(),
+            out.to_owned(),
+        ]);
+    };
+    // x264 two-pass is the one encoder whose size is predictable, so it is the last resort for tiny targets.
+    let cpu_two_pass = |bitrate: u64, base: f64| -> Result<u64, String> {
+        let cores = std::thread::available_parallelism().map(|v| v.get()).unwrap_or(4);
+        let (preset, threads) = cpu_compression_tuning(cores);
+        let mut args = common_base.clone();
+        args.extend([
+            "-c:v".into(),
+            "libx264".into(),
+            "-preset".into(),
+            preset.into(),
+            "-threads".into(),
+            threads.to_string(),
+            "-b:v".into(),
+            bitrate.to_string(),
+            "-maxrate".into(),
+            ((bitrate as f64 * 1.25) as u64).to_string(),
+            "-bufsize".into(),
+            (bitrate * 2).to_string(),
+            "-passlogfile".into(),
+            pass.to_string_lossy().into_owned(),
+        ]);
+        let mut first = args.clone();
+        first.extend([
+            "-pass".into(),
+            "1".into(),
+            "-an".into(),
+            "-progress".into(),
+            "pipe:1".into(),
+            "-nostats".into(),
+            "-f".into(),
+            "null".into(),
+            "-".into(),
+        ]);
+        run_progress(&tools.ffmpeg, &first, m.duration, base, 0.05, emit, active)?;
+        args.extend(["-pass".into(), "2".into()]);
+        append_output(&mut args, &input.output_path);
+        run_progress(&tools.ffmpeg, &args, m.duration, base + 0.05, 0.05, emit, active)?;
+        fs::metadata(&input.output_path).map(|f| f.len()).map_err(|e| e.to_string())
+    };
+    // NVENC runs at constant QP, so its size is only known after encoding: every attempt goes to a
+    // temp file and the best one under the target is copied to the real output at the end.
+    let nvenc = encoder.name.ends_with("_nvenc");
+    let first_out = if nvenc {
+        dir.path().join("attempt-0.mp4").to_string_lossy().into_owned()
+    } else {
+        input.output_path.clone()
+    };
+    append_output(&mut final_args, &first_out);
+    run_progress(
+        &tools.ffmpeg,
+        &final_args,
+        m.duration,
+        if encoder.hardware { 0.0 } else { 0.5 },
+        if nvenc {
+            0.4
+        } else if encoder.hardware {
+            1.0
+        } else {
+            0.5
+        },
+        emit,
+        active,
+    )?;
+    // The picked size is a ceiling: never deliver a file above it.
+    let limit = plan.target_bytes as f64;
+    let mut bytes = fs::metadata(&first_out).map_err(|e| e.to_string())?.len();
+    if nvenc {
+        let encoder_name = encoder.name.clone();
+        let mut attempts = vec![(encoder.nvenc_qp.unwrap_or(20), bytes, first_out.clone())];
+        while attempts.len() < NVENC_MAX_ATTEMPTS {
+            let tried: Vec<(u64, u64)> = attempts.iter().map(|a| (a.0, a.1)).collect();
+            let Some(qp) = next_nvenc_qp(&tried, plan.target_bytes) else { break };
+            let path = dir
+                .path()
+                .join(format!("attempt-{}.mp4", attempts.len()))
+                .to_string_lossy()
+                .into_owned();
+            let recipe = compression_hardware_recipe_with_qp(&encoder_name, plan.video_bitrate, qp);
+            let mut retry_args = common_base.clone();
+            retry_args.extend(recipe.args);
+            append_output(&mut retry_args, &path);
+            run_progress(
+                &tools.ffmpeg,
+                &retry_args,
+                m.duration,
+                0.4 + 0.2 * (attempts.len() - 1) as f64,
+                0.2,
+                emit,
+                active,
+            )?;
+            let size = fs::metadata(&path).map_err(|e| e.to_string())?.len();
+            attempts.push((qp, size, path));
+        }
+        // Largest file that still fits is the best quality we can offer.
+        let best = attempts
+            .iter()
+            .filter(|a| a.1 as f64 <= limit)
+            .max_by_key(|a| a.1)
+            .cloned();
+        if let Some((qp, size, path)) = best {
+            fs::copy(&path, &input.output_path).map_err(|e| e.to_string())?;
+            encoder = compression_hardware_recipe_with_qp(&encoder_name, plan.video_bitrate, qp);
+            bytes = size;
+        } else {
+            // Even the coarsest constant QP is over the ceiling (very small targets): switch to bitrate control.
+            let mut args = common_base.clone();
+            args.extend(nvenc_vbr_args(&encoder_name, plan.video_bitrate));
+            append_output(&mut args, &input.output_path);
+            run_progress(&tools.ffmpeg, &args, m.duration, 0.8, 0.1, emit, active)?;
+            bytes = fs::metadata(&input.output_path).map_err(|e| e.to_string())?.len();
+            encoder = CompressionEncoder {
+                name: encoder_name,
+                args: Vec::new(),
+                hardware: true,
+                nvenc_qp: None,
+            };
+            if bytes as f64 > limit {
+                // NVENC cannot hold very low bitrates: x264 two-pass can, so use it (and say so in the result).
+                let mut bitrate = (plan.video_bitrate as f64 * 0.97) as u64;
+                for _ in 0..4 {
+                    bytes = cpu_two_pass(bitrate, 0.9)?;
+                    if bytes as f64 <= limit {
+                        break;
+                    }
+                    bitrate = (bitrate as f64 * limit * 0.97 / bytes as f64) as u64;
+                }
+                encoder = CompressionEncoder {
+                    name: "libx264".into(),
+                    args: Vec::new(),
+                    hardware: false,
+                    nvenc_qp: None,
+                };
+            }
+        }
+    }
+    if !nvenc && bytes as f64 > limit {
+        // Bitrate-controlled encoders can land a little high (container overhead, rate-control drift):
+        // re-encode once with the video bitrate scaled down to 97% of the ceiling.
+        let scaled = (plan.video_bitrate as f64 * limit * 0.97 / bytes as f64) as u64;
+        let mut retry_args = common_base.clone();
+        if encoder.hardware {
+            retry_args.extend(compression_hardware_recipe(&encoder.name, scaled).args);
+        } else {
+            retry_args.extend([
+                "-c:v".into(),
+                "libx264".into(),
+                "-preset".into(),
+                "medium".into(),
+                "-b:v".into(),
+                scaled.to_string(),
+                "-maxrate".into(),
+                ((scaled as f64 * 1.25) as u64).to_string(),
+                "-bufsize".into(),
+                (scaled * 2).to_string(),
+            ]);
+        }
+        append_output(&mut retry_args, &input.output_path);
+        run_progress(&tools.ffmpeg, &retry_args, m.duration, 0.9, 0.1, emit, active)?;
+        bytes = fs::metadata(&input.output_path).map_err(|e| e.to_string())?.len();
+        if encoder.hardware && bytes as f64 > limit {
+            // Intel/AMD hit the same wall as NVIDIA at very low bitrates (Quick Sync failed at 0.19 Mbps in
+            // testing): x264 two-pass is the encoder that can hold the size, so finish with it.
+            let mut bitrate = (plan.video_bitrate as f64 * 0.97) as u64;
+            for _ in 0..4 {
+                bytes = cpu_two_pass(bitrate, 0.9)?;
+                if bytes as f64 <= limit {
+                    break;
+                }
+                bitrate = (bitrate as f64 * limit * 0.97 / bytes as f64) as u64;
+            }
+            encoder = CompressionEncoder {
+                name: "libx264".into(),
+                args: Vec::new(),
+                hardware: false,
+                nvenc_qp: None,
+            };
+        }
+    }
+    if bytes as f64 > limit {
+        // Never leave an over-size file behind.
+        let _ = fs::remove_file(&input.output_path);
+        return Err(format!(
+            "Couldn't fit this video under {target_size_mb} MB. Choose a larger size."
+        ));
+    }
+    let metadata = probe_media(&tools.ffprobe, &input.output_path)?;
+    emit(1.0);
+    Ok(CompressionResult {
+        output: input.output_path,
+        bytes,
+        plan,
+        metadata,
+        encoder: encoder.name,
+        hardware: encoder.hardware,
+        nvenc_qp: encoder.nvenc_qp,
+    })
+}
+
 #[tauri::command]
 pub async fn start_compression(
     window: WebviewWindow,
@@ -1981,187 +2605,10 @@ pub async fn start_compression(
     let active = state.active_pid.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _job_guard = job_guard;
-        let m = match input.metadata {
-            Some(m) => m,
-            None => probe_media(&tools.ffprobe, &input.video_path)?,
+        let emit = |v: f64| {
+            let _ = window.emit("export-progress", v);
         };
-        let mut plan = compression_plan(&m, input.target_size_mb);
-        let probe_height = m.height.min(1080);
-        let probe_width =
-            ((m.width as f64 * probe_height as f64 / m.height.max(1) as f64).round() as u64).max(2)
-                & !1;
-        let mut encoder = automatic_compression_encoder(
-            &tools.ffmpeg,
-            plan.video_bitrate,
-            probe_width,
-            probe_height,
-            &input.codec_preference,
-        );
-        if encoder.name.starts_with("av1_") {
-            let (max_height, output_fps) =
-                compression_geometry(plan.video_bitrate, true, fps(&m.fps));
-            plan.output_height = m.height.min(max_height);
-            plan.output_fps = output_fps;
-        }
-        let dir = tempfile::Builder::new()
-            .prefix("SubarollCompress-")
-            .tempdir()
-            .map_err(|e| e.to_string())?;
-        let pass = dir.path().join("pass");
-        let mut filters = Vec::new();
-        if m.is_hdr {
-            filters.extend(
-                [
-                    "zscale=t=linear:npl=100",
-                    "format=gbrpf32le",
-                    "zscale=p=bt709",
-                    "tonemap=hable:desat=0",
-                    "zscale=t=bt709:m=bt709:r=tv",
-                ]
-                .map(str::to_owned),
-            )
-        }
-        if plan.output_height < m.height {
-            filters.push(format!("scale=-2:{}:flags=lanczos", plan.output_height))
-        }
-        if plan.output_fps < fps(&m.fps) - 0.01 {
-            filters.push(format!("fps={}", fmt(plan.output_fps)))
-        }
-        filters.push("format=yuv420p".into());
-        let mut common = vec![
-            "-hide_banner".into(),
-            "-y".into(),
-            "-noautorotate".into(),
-            "-i".into(),
-            input.video_path.clone(),
-            "-map".into(),
-            "0:v:0".into(),
-            "-vf".into(),
-            filters.join(","),
-        ];
-        let common_base = common.clone();
-        let mut final_args = if encoder.hardware {
-            common.extend(encoder.args.clone());
-            common
-        } else {
-            let logical_cores = std::thread::available_parallelism()
-                .map(|value| value.get())
-                .unwrap_or(4);
-            let (cpu_preset, cpu_threads) = cpu_compression_tuning(logical_cores);
-            common.extend([
-                "-c:v".into(),
-                "libx264".into(),
-                "-preset".into(),
-                cpu_preset.into(),
-                "-threads".into(),
-                cpu_threads.to_string(),
-                "-b:v".into(),
-                plan.video_bitrate.to_string(),
-                "-maxrate".into(),
-                ((plan.video_bitrate as f64 * 1.25) as u64).to_string(),
-                "-bufsize".into(),
-                (plan.video_bitrate * 2).to_string(),
-                "-passlogfile".into(),
-                pass.to_string_lossy().into_owned(),
-            ]);
-            let mut p1 = common.clone();
-            p1.extend([
-                "-pass".into(),
-                "1".into(),
-                "-an".into(),
-                "-progress".into(),
-                "pipe:1".into(),
-                "-nostats".into(),
-                "-f".into(),
-                "null".into(),
-                "-".into(),
-            ]);
-            run_progress(&tools.ffmpeg, &p1, m.duration, 0.0, 0.5, &window, &active)?;
-            common.extend(["-pass".into(), "2".into()]);
-            common
-        };
-        let append_output = |args: &mut Vec<String>| {
-            args.extend([
-                "-map".into(),
-                "0:a:0?".into(),
-                "-c:a".into(),
-                "aac".into(),
-                "-b:a".into(),
-                plan.audio_bitrate.to_string(),
-                "-map_metadata".into(),
-                "0".into(),
-                "-map_chapters".into(),
-                "0".into(),
-                "-movflags".into(),
-                "+faststart".into(),
-                "-progress".into(),
-                "pipe:1".into(),
-                "-nostats".into(),
-                input.output_path.clone(),
-            ]);
-        };
-        append_output(&mut final_args);
-        run_progress(
-            &tools.ffmpeg,
-            &final_args,
-            m.duration,
-            if encoder.hardware { 0.0 } else { 0.5 },
-            if encoder.name.ends_with("_nvenc") {
-                0.7
-            } else if encoder.hardware {
-                1.0
-            } else {
-                0.5
-            },
-            &window,
-            &active,
-        )?;
-        let mut bytes = fs::metadata(&input.output_path)
-            .map_err(|e| e.to_string())?
-            .len();
-        if encoder.name.ends_with("_nvenc") && bytes as f64 > plan.target_bytes as f64 * 1.03 {
-            let ratio = bytes as f64 / plan.target_bytes as f64;
-            let qp_increase = (ratio.log2() * 6.0).ceil().max(1.0) as u64 + 1;
-            let corrected_qp = (encoder.nvenc_qp.unwrap_or(20) + qp_increase).min(32);
-            let encoder_name = encoder.name.clone();
-            encoder = compression_hardware_recipe_with_qp(
-                &encoder_name,
-                plan.video_bitrate,
-                corrected_qp,
-            );
-            let mut retry_args = common_base;
-            retry_args.extend(encoder.args.clone());
-            append_output(&mut retry_args);
-            run_progress(
-                &tools.ffmpeg,
-                &retry_args,
-                m.duration,
-                0.7,
-                0.3,
-                &window,
-                &active,
-            )?;
-            bytes = fs::metadata(&input.output_path)
-                .map_err(|e| e.to_string())?
-                .len();
-        }
-        if bytes as f64 > plan.target_bytes as f64 * 1.03 {
-            return Err(format!(
-                "Compressed file exceeded the {} MB target.",
-                input.target_size_mb
-            ));
-        }
-        let metadata = probe_media(&tools.ffprobe, &input.output_path)?;
-        let _ = window.emit("export-progress", 1.0);
-        Ok(CompressionResult {
-            output: input.output_path,
-            bytes,
-            plan,
-            metadata,
-            encoder: encoder.name,
-            hardware: encoder.hardware,
-            nvenc_qp: encoder.nvenc_qp,
-        })
+        compress_video(&tools, input, &active, &emit)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2219,6 +2666,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sidecar_subtitle_matching() {
+        let dir = tempfile::tempdir().unwrap();
+        let touch = |n: &str| fs::write(dir.path().join(n), "x").unwrap();
+        for n in [
+            "Frieren S02E03.mkv", "Frieren S2E3 [JP].srt", "Frieren S02E30.srt",
+            "Frieren S01E03.srt", "Other Show S02E03.srt", "Frieren - 03.srt",
+        ] {
+            touch(n);
+        }
+        let found = |v: &str| find_sidecar(&dir.path().join(v)).map(|p| p.file_name().unwrap().to_string_lossy().into_owned());
+        assert_eq!(found("Frieren S02E03.mkv").as_deref(), Some("Frieren S2E3 [JP].srt"));
+        touch("Frieren S02E03.ass");
+        assert_eq!(found("Frieren S02E03.mkv").as_deref(), Some("Frieren S02E03.ass"));
+        assert_eq!(found("Frieren S02E04.mkv"), None);
+        assert_eq!(found("[Grp] Frieren - 03 [1080p].mkv").as_deref(), Some("Frieren - 03.srt"));
+    }
+
+    #[test]
     fn media_tool_output_is_capped_and_truncation_is_reported() {
         let (kept, truncated) = read_capped(&b"abcdef"[..], 4);
         assert_eq!(kept, b"abcd");
@@ -2258,6 +2723,239 @@ mod tests {
         let c = canvas(&m);
         assert_eq!((c.width, c.height, c.padded), (1920, 1080, false));
     }
+    fn meta(duration: f64, bit_rate: u64) -> MediaMetadata {
+        MediaMetadata {
+            width: 1920,
+            height: 1080,
+            duration,
+            bit_rate,
+            fps: "30/1".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn compression_target_limits_are_enforced() {
+        let m = meta(600.0, 0);
+        for bad in [0.0, 0.5, 250.1, 10000.0, f64::NAN, f64::INFINITY, -5.0] {
+            assert!(check_compression_target(&m, bad).is_err(), "{bad} should be refused");
+        }
+        for good in [1.0 + 24.0, 25.0, 100.0, 250.0] {
+            assert!(check_compression_target(&m, good).is_ok(), "{good} should be accepted");
+        }
+        assert!(check_compression_target(&meta(0.0, 0), 25.0).is_err());
+        assert!(check_compression_target(&meta(f64::NAN, 0), 25.0).is_err());
+    }
+
+    #[test]
+    fn too_small_targets_are_refused_with_a_usable_minimum() {
+        let long = meta(2.0 * 3600.0, 0);
+        let error = check_compression_target(&long, 25.0).unwrap_err();
+        assert!(error.contains("at least"), "{error}");
+        // The advertised minimum must itself be accepted, and one MB less must not.
+        let min = min_target_mb(long.duration);
+        assert!(min <= MAX_COMPRESSION_MB);
+        assert!(check_compression_target(&long, min).is_ok());
+        assert!(check_compression_target(&long, min - 1.0).is_err());
+        // The same 25 MB is fine for a short video.
+        assert!(check_compression_target(&meta(300.0, 0), 25.0).is_ok());
+    }
+
+    #[test]
+    fn every_accepted_target_keeps_a_watchable_bitrate() {
+        for duration in [5.0, 60.0, 600.0, 3600.0] {
+            let m = meta(duration, 0);
+            for mb in [1.0, 5.0, 10.0, 25.0, 100.0, 250.0] {
+                if check_compression_target(&m, mb).is_ok() {
+                    let plan = compression_plan(&m, mb);
+                    assert!(plan.video_bitrate >= MIN_VIDEO_BITRATE, "{mb} MB / {duration}s");
+                    assert!(plan.target_bytes <= ceiling_bytes(MAX_COMPRESSION_MB));
+                    assert!(plan.output_height >= 480.min(m.height));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn huge_targets_do_not_inflate_past_the_source() {
+        let plan = compression_plan(&meta(60.0, 1_000_000), 250.0);
+        assert!(plan.video_bitrate <= 1_500_000, "{}", plan.video_bitrate);
+        // With an unknown source bitrate the budget is used as given.
+        assert!(compression_plan(&meta(60.0, 0), 250.0).video_bitrate > 1_500_000);
+    }
+
+    #[test]
+    fn estimate_matches_the_plan_and_av1_never_picks_less_than_h264() {
+        let m = meta(300.0, 0);
+        let h264 = plan_compression(m.clone(), 25.0, false, "auto".into()).unwrap();
+        let av1 = plan_compression(m.clone(), 25.0, true, "auto".into()).unwrap();
+        assert_eq!(h264.video_bitrate, compression_plan(&m, 25.0).video_bitrate);
+        assert!(av1.output_height >= h264.output_height);
+        assert!(plan_compression(m, 0.0, false, "auto".into()).is_err());
+    }
+
+    /// 1080p30 test clip with audio, built with the same ffmpeg the app uses.
+    fn make_clip(tools: &Tools, dir: &Path, seconds: u32) -> PathBuf {
+        let path = dir.join("source.mp4");
+        let status = Command::new(&tools.ffmpeg)
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
+            .arg(format!("testsrc2=size=1920x1080:rate=30:duration={seconds}"))
+            .args(["-f", "lavfi", "-i"])
+            .arg(format!("sine=frequency=440:duration={seconds}"))
+            .args(["-c:v", "libx264", "-preset", "veryfast", "-b:v", "6M", "-pix_fmt", "yuv420p"])
+            .args(["-c:a", "aac", "-b:a", "128k"])
+            .arg(&path)
+            .status()
+            .expect("run ffmpeg");
+        assert!(status.success(), "could not build the test clip");
+        path
+    }
+
+    fn run_compression(
+        tools: &Tools,
+        source: &Path,
+        out: &Path,
+        mb: f64,
+        clip: (f64, f64),
+    ) -> Result<CompressionResult, String> {
+        let active = Arc::new(Mutex::new(None));
+        let last = Mutex::new(0.0_f64);
+        let emit = |v: f64| *last.lock().unwrap() = v;
+        let result = compress_video(
+            tools,
+            CompressionInput {
+                video_path: source.to_string_lossy().into_owned(),
+                output_path: out.to_string_lossy().into_owned(),
+                metadata: None,
+                target_size_mb: mb,
+                codec_preference: "auto".into(),
+                encoder_preference: std::env::var("SUBAROLL_TEST_ENCODER").unwrap_or_else(|_| "auto".into()),
+                clip_start: clip.0,
+                clip_duration: clip.1,
+            },
+            &active,
+            &emit,
+        );
+        if result.is_ok() {
+            assert!(*last.lock().unwrap() >= 0.99, "progress never reached 100%");
+        }
+        assert!(active.lock().unwrap().is_none(), "ffmpeg process was left registered");
+        result
+    }
+
+    #[test]
+    #[ignore = "runs real ffmpeg compressions; use: cargo test real_compression -- --ignored --nocapture"]
+    fn real_compression_meets_target_without_crashing_or_degrading() {
+        let tools = find_tools(None).expect("ffmpeg/ffprobe not found");
+        let dir = tempfile::tempdir().unwrap();
+        let source = make_clip(&tools, dir.path(), 40);
+        let source_bytes = fs::metadata(&source).unwrap().len();
+        let source_meta = probe_media(&tools.ffprobe, source.to_str().unwrap()).unwrap();
+
+        // 1. A normal Discord-style target: stays under the limit, keeps full length, audio, watchable size.
+        let out = dir.path().join("a.mp4");
+        let r = run_compression(&tools, &source, &out, 8.0, (0.0, 0.0)).expect("8 MB compression");
+        let limit = ceiling_bytes(8.0);
+        println!("8 MB target -> {} bytes via {} at {}p {}fps", r.bytes, r.encoder, r.metadata.height, r.metadata.fps);
+        assert!(r.bytes <= limit, "{} > {limit}", r.bytes);
+        assert!(r.metadata.height >= 480 && r.metadata.height <= source_meta.height);
+        assert!((r.metadata.duration - source_meta.duration).abs() < 1.5);
+        assert!(!r.metadata.audio_streams.is_empty(), "audio was dropped");
+        assert!(r.bytes > 100_000, "output suspiciously tiny");
+
+        // 1b. Under 5 MB nothing is squeezed for a margin: the plain 4 MB ceiling applies.
+        let r = run_compression(&tools, &source, &dir.path().join("a4.mp4"), 4.0, (0.0, 0.0)).expect("4 MB compression");
+        println!("4 MB target -> {} bytes (ceiling {})", r.bytes, ceiling_bytes(4.0));
+        assert!(r.bytes <= ceiling_bytes(4.0));
+        assert!(r.bytes > ceiling_bytes(4.0) / 2, "4 MB result wastes more than half the budget");
+
+        // 2. A target too small for this length is refused up front, before any encoding.
+        let err = run_compression(&tools, &source, &dir.path().join("b.mp4"), 1.0, (0.0, 0.0)).err().expect("should be refused");
+        println!("1 MB target -> refused: {err}");
+        assert!(err.contains("at least"), "{err}");
+        assert!(!dir.path().join("b.mp4").exists(), "a refused target still produced a file");
+
+        // 3. The maximum target must not bloat past the source or the 250 MB cap.
+        let out = dir.path().join("c.mp4");
+        let r = run_compression(&tools, &source, &out, 250.0, (0.0, 0.0)).expect("250 MB compression");
+        println!("250 MB target -> {} bytes (source {source_bytes}) via {}", r.bytes, r.encoder);
+        assert!(r.bytes as f64 <= source_bytes as f64 * 2.0, "output bloated past 2x the source");
+        assert!(r.bytes <= ceiling_bytes(250.0));
+
+        // 4. Out-of-range requests are refused, never encoded.
+        for bad in [0.0, 250.1, f64::NAN] {
+            assert!(run_compression(&tools, &source, &dir.path().join("d.mp4"), bad, (0.0, 0.0)).is_err());
+        }
+
+        // 5. A 10 s test clip uses the same bitrate as the full encode, so its size scales with its length.
+        let out = dir.path().join("e.mp4");
+        let r = run_compression(&tools, &source, &out, 8.0, (5.0, 10.0)).expect("clip compression");
+        println!("10 s clip of the 8 MB plan -> {} bytes, {:.1}s", r.bytes, r.metadata.duration);
+        assert!((r.metadata.duration - 10.0).abs() < 1.5, "clip length {}", r.metadata.duration);
+        assert!(r.bytes <= (ceiling_bytes(8.0) as f64 * (10.0 / 40.0)) as u64);
+    }
+
+    #[test]
+    #[ignore = "needs SUBAROLL_TEST_SOURCE and SUBAROLL_TEST_OUT (optional SUBAROLL_TEST_RATIO, default 0.2)"]
+    fn real_compression_to_fraction_of_source() {
+        let var = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("set {k}"));
+        let source = PathBuf::from(var("SUBAROLL_TEST_SOURCE"));
+        let out = PathBuf::from(var("SUBAROLL_TEST_OUT"));
+        let ratio: f64 = std::env::var("SUBAROLL_TEST_RATIO").ok().and_then(|v| v.parse().ok()).unwrap_or(0.2);
+        let tools = find_tools(None).expect("ffmpeg/ffprobe not found");
+        let src_bytes = fs::metadata(&source).unwrap().len();
+        let src = probe_media(&tools.ffprobe, source.to_str().unwrap()).unwrap();
+        // The app takes whole megabytes, so round the same way a user would type it.
+        let target_mb = std::env::var("SUBAROLL_TEST_MB").ok().and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| (src_bytes as f64 * ratio / 1_048_576.0).round());
+        let plan = compression_plan(&src, target_mb);
+        let started = std::time::Instant::now();
+        let r = run_compression(&tools, &source, &out, target_mb, (0.0, 0.0)).expect("compression failed");
+        let secs = started.elapsed().as_secs_f64();
+        println!("SOURCE   {}x{} @ {} fps, {:.1}s, video {:.2} Mbps, file {:.1} MB", src.width, src.height, src.fps, src.duration, src.bit_rate as f64 / 1e6, src_bytes as f64 / 1_048_576.0);
+        println!("TARGET   {target_mb} MB ({} bytes ceiling); plan video {:.2} Mbps + audio {} kbps, {}p @ {:.1} fps", ceiling_bytes(target_mb), plan.video_bitrate as f64 / 1e6, plan.audio_bitrate / 1000, plan.output_height, plan.output_fps);
+        println!("ENCODER  {} (hardware: {}){}", r.encoder, r.hardware, r.nvenc_qp.map(|q| format!(", NVENC QP {q}")).unwrap_or_default());
+        println!("OUTPUT   {}x{} @ {} fps, {:.1}s, video {:.2} Mbps, file {:.1} MB = {:.1}% of source", r.metadata.width, r.metadata.height, r.metadata.fps, r.metadata.duration, r.metadata.bit_rate as f64 / 1e6, r.bytes as f64 / 1_048_576.0, r.bytes as f64 * 100.0 / src_bytes as f64);
+        println!("TIME     {secs:.0}s ({:.1}x realtime)", src.duration / secs);
+        assert!(r.bytes <= ceiling_bytes(target_mb), "over target");
+        assert!((r.metadata.duration - src.duration).abs() < 1.5, "length changed");
+        assert!(!r.metadata.audio_streams.is_empty(), "audio dropped");
+    }
+
+    #[test]
+    fn nvenc_qp_search_converges_on_the_target_without_repeating() {
+        // Model: size halves every 6 QP; the true size at QP 20 is 6x the target (needs about QP 35).
+        let target = 100_000_000u64;
+        let size_at = |qp: u64| (target as f64 * 6.0 * 2f64.powf(-((qp as f64) - 20.0) / 6.0)) as u64;
+        let mut tried = vec![(20, size_at(20))];
+        while let Some(qp) = next_nvenc_qp(&tried, target) {
+            assert!(!tried.iter().any(|&(q, _)| q == qp), "repeated QP {qp}");
+            assert!((NVENC_QP_MIN..=NVENC_QP_MAX).contains(&qp));
+            tried.push((qp, size_at(qp)));
+            assert!(tried.len() <= NVENC_MAX_ATTEMPTS, "did not settle: {tried:?}");
+        }
+        let (_, best) = *tried.last().unwrap();
+        assert!(best as f64 >= target as f64 * 0.90 && best <= target, "{tried:?}");
+    }
+
+    #[test]
+    fn nvenc_qp_search_handles_undershoot_overshoot_and_limits() {
+        let target = 50_000_000u64;
+        // Already in the window: stop.
+        assert_eq!(next_nvenc_qp(&[(24, 47_000_000)], target), None);
+        // First pass far too small (simple content): lowers QP, never below the floor.
+        let down = next_nvenc_qp(&[(20, 5_000_000)], target).unwrap();
+        assert!(down < 20 && down >= NVENC_QP_MIN, "{down}");
+        // First pass far too big: raises QP, never above the ceiling.
+        let up = next_nvenc_qp(&[(20, 5_000_000_000)], target).unwrap();
+        assert!(up > 20 && up <= NVENC_QP_MAX, "{up}");
+        // Already at the ceiling and still too big: nothing more to try.
+        assert_eq!(next_nvenc_qp(&[(NVENC_QP_MAX - 1, 900_000_000), (NVENC_QP_MAX, 800_000_000)], target), None);
+        // Already at the floor and still too small: nothing more to try.
+        assert_eq!(next_nvenc_qp(&[(NVENC_QP_MIN + 1, 1_000_000), (NVENC_QP_MIN, 2_000_000)], target), None);
+        assert_eq!(next_nvenc_qp(&[], target), None);
+    }
+
     #[test]
     fn compression_never_upscales() {
         let m = MediaMetadata {
@@ -2334,12 +3032,101 @@ mod tests {
     }
 
     #[test]
+    fn thin_60fps_budgets_use_720p_but_nothing_else_changes() {
+        // 60 fps, 2.4-3.2 Mbps: 720p60 instead of 900p60 (measured better at the same size).
+        assert_eq!(compression_geometry(3_040_000, false, 60.0), (720, 60.0));
+        assert_eq!(compression_geometry(2_500_000, false, 60.0), (720, 60.0));
+        // More budget still earns 900p / 1080p, and the frame rate is never traded for this.
+        assert_eq!(compression_geometry(3_400_000, false, 60.0), (900, 60.0));
+        assert_eq!(compression_geometry(4_200_000, false, 60.0), (1080, 60.0));
+        // 30 fps is untouched: a source that fits 1080p keeps it.
+        assert_eq!(compression_geometry(3_040_000, false, 30.0), (1080, 30.0));
+        assert_eq!(compression_geometry(2_287_919, false, 30.0), (1080, 30.0));
+        // AV1 is more efficient and was not measured, so it keeps its own tiers.
+        assert_eq!(compression_geometry(3_040_000, true, 60.0), (1080, 60.0));
+    }
+
+    #[test]
+    fn nvenc_bitrate_fallback_uses_vbr_at_the_requested_bitrate() {
+        let args = nvenc_vbr_args("h264_nvenc", 473_000);
+        let has = |k: &str, v: &str| args.windows(2).any(|p| p[0] == k && p[1] == v);
+        assert!(has("-rc", "vbr") && has("-b:v", "473000") && has("-maxrate", "591250") && has("-bufsize", "946000"));
+        assert!(!args.contains(&"-qp".to_string()), "must not pin a constant QP");
+        assert!(nvenc_vbr_args("av1_nvenc", 473_000).iter().all(|a| a != "-bf"));
+    }
+
+    #[test]
+    fn size_ceiling_uses_decimal_mb_with_margin_from_5_mb_only() {
+        // Under 5 MB: untouched (1 MB = 1,048,576 bytes), no margin.
+        assert_eq!(ceiling_bytes(1.0), 1_048_576);
+        assert_eq!(ceiling_bytes(4.0), 4_194_304);
+        // From 5 MB: 1,000,000-byte MB minus 1%, so it also fits services counting that way.
+        assert_eq!(ceiling_bytes(5.0), 4_950_000);
+        assert_eq!(ceiling_bytes(20.0), 19_800_000);
+        assert_eq!(ceiling_bytes(50.0), 49_500_000);
+        assert_eq!(ceiling_bytes(250.0), 247_500_000);
+        for mb in [5.0, 8.0, 20.0, 50.0, 100.0, 250.0] {
+            assert!(ceiling_bytes(mb) < (mb * 1_000_000.0) as u64, "{mb} MB must stay under {mb} decimal MB");
+        }
+        // Whole-MB picks never shrink the budget as the size grows.
+        let mut last = 0;
+        for mb in 1..=250 {
+            let bytes = ceiling_bytes(mb as f64);
+            assert!(bytes > last, "{mb} MB");
+            last = bytes;
+        }
+    }
+
+    #[test]
+    fn refusal_below_150_kbps_follows_the_ceiling() {
+        let m = meta(600.0, 0);
+        let min = min_target_mb(600.0);
+        assert!(check_compression_target(&m, min).is_ok());
+        assert!(check_compression_target(&m, min - 1.0).is_err());
+        let msg = check_compression_target(&m, min - 1.0).unwrap_err();
+        assert!(msg.contains("150 kbps") && msg.contains(&format!("{min}")), "{msg}");
+    }
+
+    #[test]
+    fn every_encoder_choice_switches_to_the_cpu_below_1_mbps() {
+        // macOS keeps VideoToolbox at low bitrates (see use_cpu_encoder); every other platform switches.
+        let low_goes_cpu = !cfg!(target_os = "macos");
+        for choice in ["auto", "nvenc", "qsv", "amf", "videotoolbox"] {
+            assert_eq!(use_cpu_encoder(999_999, choice), low_goes_cpu, "{choice} below 1 Mbps");
+            assert_eq!(use_cpu_encoder(190_000, choice), low_goes_cpu, "{choice} at 0.19 Mbps");
+            assert!(!use_cpu_encoder(1_000_000, choice), "{choice} at 1 Mbps");
+            assert!(!use_cpu_encoder(3_000_000, choice), "{choice} at 3 Mbps");
+        }
+        // "CPU" always means x264, at any bitrate.
+        assert!(use_cpu_encoder(5_000_000, "software"));
+        // The estimate reports it, and never promises AV1 on the CPU.
+        let low = plan_compression(meta(600.0, 0), 20.0, true, "nvenc".into()).unwrap();
+        assert_eq!(low.uses_cpu, low_goes_cpu);
+        assert!(low.output_height <= 540, "{}p", low.output_height);
+        let high = plan_compression(meta(300.0, 0), 100.0, false, "auto".into()).unwrap();
+        assert!(!high.uses_cpu);
+    }
+
+    #[test]
+    fn videotoolbox_compression_recipe_is_average_bitrate_with_a_size_ceiling() {
+        let recipe = compression_hardware_recipe("h264_videotoolbox", 2_000_000);
+        let has = |k: &str, v: &str| recipe.args.windows(2).any(|p| p[0] == k && p[1] == v);
+        assert_eq!(recipe.name, "h264_videotoolbox");
+        assert!(recipe.hardware && recipe.nvenc_qp.is_none());
+        assert!(has("-c:v", "h264_videotoolbox") && has("-b:v", "2000000"));
+        assert!(has("-maxrate", "2500000") && has("-bufsize", "4000000") && has("-pix_fmt", "yuv420p"));
+        // Must not inherit another vendor's options.
+        assert!(!recipe.args.iter().any(|a| a == "-rc" || a == "-quality" || a == "-preset" || a == "-qp"));
+    }
+
+    #[test]
     fn compression_falls_back_to_cpu_when_hardware_is_unavailable() {
         let encoder = automatic_compression_encoder(
             "/definitely/missing/ffmpeg",
             4_000_000,
             1920,
             1080,
+            "auto",
             "auto",
         );
         assert_eq!(encoder.name, "libx264");

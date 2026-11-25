@@ -3,7 +3,7 @@ document.documentElement.classList.toggle('platform-windows', /Windows/.test(nav
 const state = {
   videoPath: '', subtitlePath: '', outputPath: '', metadata: null,
   mode: 'subtitles', exporting: false, previewTimer: null, previewRequest: 0, previewBusy: false, previewPending: false, videoEncoder: '', platform: '', availableVideoEncoders: [], availableAv1Encoders: [], renderedPreviewSettings: null, renderedPreviewLayout: null, subtitleTiming: null, subtitleWarning: '',
-  availableUpdate: null, updateBusy: false, autoVideoEncoder10bit: '',
+  availableUpdate: null, updateBusy: false, planError: '', autoVideoEncoder10bit: '',
 };
 
 const $ = id => document.getElementById(id);
@@ -13,18 +13,112 @@ const elements = {
   delay: $('delay'), delayValue: $('delayValue'), position: $('position'), positionValue: $('positionValue'),
   scale: $('scale'), scaleValue: $('scaleValue'), seek: $('seek'), seekCurrent: $('seekCurrent'), seekDuration: $('seekDuration'),
   quality: $('quality'), qualityValue: $('qualityValue'), qualityHint: $('qualityHint'),
-  windowsEncoderCard: $('windowsEncoderCard'), windowsEncoder: $('windowsEncoder'), windowsPreset: $('windowsPreset'),
+  windowsEncoderCard: $('windowsEncoderCard'), windowsEncoder: $('windowsEncoder'),
   encoderAvailability: $('encoderAvailability'), encoderHint: $('encoderHint'),
   previewStage: $('previewStage'), previewFrame: $('previewFrame'), previewSubtitles: $('previewSubtitles'), previewSpinner: $('previewSpinner'),
   exportButton: $('exportButton'), testButton: $('testButton'), cancelButton: $('cancelButton'), progressWrap: $('progressWrap'),
   progressValue: $('progressValue'), progressBar: $('progressBar'), status: $('status'),
   subtitleMode: $('subtitleMode'), compressMode: $('compressMode'), compressionOptions: $('compressionOptions'),
-  targetSize: $('targetSize'), previewNote: document.querySelector('.preview-note'), subtitleOnly: [...document.querySelectorAll('.subtitle-only')],
+  targetSize: $('targetSize'), estRes: $('estRes'), estFps: $('estFps'), estRate: $('estRate'), estNote: $('estNote'), estimate: $('estimate'), previewNote: document.querySelector('.preview-note'), subtitleOnly: [...document.querySelectorAll('.subtitle-only')],
   targetDown: $('targetDown'), targetUp: $('targetUp'),
   compressionCodec: $('compressionCodec'), compressionCodecHint: $('compressionCodecHint'),
   modeEyebrow: $('modeEyebrow'), modeTitle: $('modeTitle'),
   updateButton: $('updateButton'),
 };
+
+// Custom slider: pill track, dotted fill, capsule thumb. The real <input type=range> stays on top
+// (invisible) so the rest of the app still reads/writes its value. While dragging, values near a
+// landmark softly lock; after you leave one it only re-arms once you reverse toward it.
+function enhanceSlider(box) {
+  const input = box.querySelector('input[type=range]');
+  const min = Number(input.min), max = Number(input.max), span = max - min;
+  const pct = v => (v - min) / span * 100;
+  const at = p => `calc(${p}% + ${(11 - 0.22 * p).toFixed(2)}px)`;
+  const marks = (box.dataset.marks || '').split(';').filter(Boolean).map(m => m.split(':'));
+  const snap = [...marks.map(m => Number(m[0])), ...(box.dataset.snap || '').split(',').filter(Boolean).map(Number)];
+  const ends = document.createElement('div');
+  ends.className = 'ends';
+  ends.innerHTML = `<span>${box.dataset.lo || ''}</span><span>${box.dataset.hi || ''}</span>`;
+  const ns = document.createElement('div');
+  ns.className = 'ns';
+  ns.innerHTML = '<div class="tr"><div class="fl"></div></div><div class="th"></div>';
+  const tr = ns.querySelector('.tr'), fill = ns.querySelector('.fl'), thumb = ns.querySelector('.th');
+  const ticks = marks.map(([v]) => { const tick = document.createElement('div'); tick.className = 'tk'; tick.style.left = at(pct(Number(v))); tr.appendChild(tick); return tick; });
+  const caption = document.createElement('div');
+  caption.className = 'mk';
+  marks.forEach(([v, text]) => { const label = document.createElement('span'); label.textContent = text; label.style.left = at(pct(Number(v))); caption.appendChild(label); });
+  input.before(ends, ns);
+  ns.appendChild(input);
+  box.appendChild(caption);
+
+  // Detent zone is a fixed pixel width around each landmark, independent of window size.
+  const ZONE_PX = 9;
+  let dragging = false;
+  const draw = () => {
+    const p = pct(Number(input.value));
+    fill.style.width = at(p);
+    thumb.style.left = `calc(${p}% - ${(0.22 * p).toFixed(2)}px)`;
+    // Sitting on a landmark (dragged there, typed, loaded from settings, or default) always looks locked.
+    const value = Number(input.value);
+    const hit = snap.find(point => Math.abs(value - point) < 1e-6);
+    setLocked(hit === undefined ? null : hit);
+  };
+  // Magnetic detent: while dragging, the pointer range [point-Z, point+Z] maps onto the point itself and
+  // everything outside maps linearly back to the ends. The mapping is continuous, so the thumb never
+  // jumps, you can still land right next to a point, and there is no direction state to get stuck in.
+  const knots = () => {
+    const z = Math.min(ZONE_PX * span / Math.max(40, ns.clientWidth - 22), span * 0.08);
+    const xs = [min], ys = [min];
+    for (const p of [...snap].sort((x, y) => x - y)) {
+      if (p - z <= min || p + z >= max) continue; // never let a detent swallow an end of the slider
+      xs.push(p - z, p + z); ys.push(p, p);
+    }
+    xs.push(max); ys.push(max);
+    return { xs, ys, z };
+  };
+  const remap = raw => {
+    const { xs, ys } = knots();
+    for (let i = 1; i < xs.length; i++) {
+      if (raw <= xs[i]) {
+        const width = xs[i] - xs[i - 1];
+        return width > 0 ? ys[i - 1] + (ys[i] - ys[i - 1]) * (raw - xs[i - 1]) / width : ys[i];
+      }
+    }
+    return max;
+  };
+  const setLocked = point => {
+    ns.classList.toggle('lock', point !== null);
+    thumb.classList.toggle('locked', point !== null);
+    ticks.forEach((tick, i) => tick.classList.toggle('hit', point !== null && Number(marks[i]?.[0]) === point));
+  };
+  input.addEventListener('input', () => {
+    if (!dragging || !snap.length) { draw(); return; }
+    const value = remap(Number(input.value));
+    input.value = String(value);
+    draw();
+  });
+  input.addEventListener('pointerdown', () => { dragging = true; ns.classList.add('drag'); });
+  const release = () => { dragging = false; ns.classList.remove('drag'); };
+  window.addEventListener('pointerup', release);
+  window.addEventListener('pointercancel', release);
+  input.refreshSlider = draw;
+  draw();
+  return caption;
+}
+const sliderCaptions = [...document.querySelectorAll('.slider')].map(enhanceSlider);
+function refreshSliders() { document.querySelectorAll('.slider input[type=range]').forEach(input => input.refreshSlider()); }
+// Landmark labels that would overlap a neighbour (narrow window) are hidden rather than squashed.
+function declutterCaptions() {
+  for (const caption of sliderCaptions) {
+    let right = -Infinity;
+    for (const label of caption.children) {
+      label.style.visibility = '';
+      const box = label.getBoundingClientRect();
+      if (box.left < right + 6 || box.left < caption.getBoundingClientRect().left - 4 || box.right > caption.getBoundingClientRect().right + 4) label.style.visibility = 'hidden';
+      else right = box.right;
+    }
+  }
+}
 
 function basename(filePath) { return filePath.split(/[\\/]/).pop() || filePath; }
 function extless(filePath) { return basename(filePath).replace(/\.[^.]+$/, ''); }
@@ -50,7 +144,7 @@ function settings() {
   return {
     delaySeconds: Number(elements.delay.value), positionPercent: Number(elements.position.value),
     scalePercent: Number(elements.scale.value), quality: Number(elements.quality.value),
-    windowsEncoder: elements.windowsEncoder.value, windowsPreset: elements.windowsPreset.value,
+    windowsEncoder: elements.windowsEncoder.value, windowsPreset: 'quality', // the Quality slider is the only quality control; encoders always use their best preset
   };
 }
 const SETTINGS_KEY = 'subaroll.subtitleSettings';
@@ -58,7 +152,6 @@ const LEGACY_SETTINGS_KEY = 'subtitleBurner.subtitleSettings';
 const COMPRESSION_CODEC_KEY = 'subaroll.compressionCodec';
 const LEGACY_COMPRESSION_CODEC_KEY = 'subtitleBurner.compressionCodec';
 const COMPRESSION_TARGET_KEY = 'subaroll.compressionTargetMB';
-const MODE_KEY = 'subaroll.mode';
 function saveSubtitleSettings() {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...settings(), settingsVersion: 4 }));
 }
@@ -81,10 +174,9 @@ function restoreSubtitleSettings() {
         : 95 + (saved.positionPercent - 100);
       elements.position.value = String(Math.max(0, Math.min(100, position)));
     }
-    if (Number.isFinite(saved.scalePercent)) elements.scale.value = String(Math.max(50, Math.min(180, saved.scalePercent)));
+    if (Number.isFinite(saved.scalePercent)) elements.scale.value = String(Math.max(50, Math.min(200, saved.scalePercent)));
     if (Number.isFinite(saved.quality)) elements.quality.value = String(Math.max(60, Math.min(100, saved.quality)));
-    if (['auto', 'nvenc', 'amf', 'qsv', 'software'].includes(saved.windowsEncoder)) elements.windowsEncoder.value = saved.windowsEncoder;
-    if (['quality', 'balanced', 'fast'].includes(saved.windowsPreset)) elements.windowsPreset.value = saved.windowsPreset;
+    if (['auto', 'nvenc', 'amf', 'qsv', 'videotoolbox', 'software'].includes(saved.windowsEncoder)) elements.windowsEncoder.value = saved.windowsEncoder;
     if (saved.settingsVersion !== 4) saveSubtitleSettings();
   } catch (_) {}
   const position = Number(elements.position.value);
@@ -101,8 +193,8 @@ function qualityDescription(value) {
 function refreshQualityDisplay() {
   const value = Number(elements.quality.value);
   const [label, hint] = qualityDescription(value);
-  elements.qualityValue.textContent = `CQ ${value} · ${label}`;
-  elements.qualityHint.textContent = hint;
+  elements.qualityValue.textContent = `CQ ${value}`;
+  elements.qualityHint.textContent = `${label}. ${hint}`;
 }
 function autoEncoderLabel() {
   const tenBit = state.metadata?.isHdr || state.metadata?.bitDepth > 8;
@@ -116,14 +208,37 @@ function autoEncoderLabel() {
   return labels[encoder] || '';
 }
 function encoderPresetDescription() {
-  const encoder = elements.windowsEncoder.value;
-  const preset = elements.windowsPreset.value;
-  const names = { auto: 'Auto', nvenc: 'NVIDIA NVENC', amf: 'AMD AMF', qsv: 'Intel Quick Sync', software: 'CPU' };
-  const speeds = { quality: 'CTT quality', balanced: 'balanced', fast: 'fast' };
   const autoLabel = autoEncoderLabel();
   elements.windowsEncoder.options[0].textContent = autoLabel ? `Auto · ${autoLabel}` : 'Auto';
-  elements.encoderHint.textContent = `${names[encoder]} · ${speeds[preset]}. Codec, 10-bit, HDR, resolution, and color metadata remain source-aware.`;
+  elements.encoderHint.textContent = `${elements.windowsEncoder.selectedOptions[0].textContent}. Codec, 10-bit, HDR, resolution, and color metadata remain source-aware.`;
 }
+function syncEncoderChips() {
+  const select = elements.windowsEncoder;
+  document.querySelectorAll('#encoderChips .chip').forEach(chip => {
+    const option = [...select.options].find(item => item.value === chip.dataset.value);
+    chip.disabled = select.disabled || Boolean(option?.disabled);
+    chip.classList.toggle('on', select.value === chip.dataset.value);
+    chip.setAttribute('aria-checked', String(select.value === chip.dataset.value));
+  });
+}
+document.querySelectorAll('#encoderChips .chip').forEach(chip => chip.addEventListener('click', () => {
+  elements.windowsEncoder.value = chip.dataset.value;
+  elements.windowsEncoder.dispatchEvent(new Event('change', { bubbles: true }));
+}));
+function syncCodecChips() {
+  const select = elements.compressionCodec;
+  document.querySelectorAll('#codecChips .chip').forEach(chip => {
+    const option = [...select.options].find(item => item.value === chip.dataset.value);
+    const on = select.value === chip.dataset.value;
+    chip.disabled = Boolean(option?.disabled);
+    chip.classList.toggle('on', on);
+    chip.setAttribute('aria-checked', String(on));
+  });
+}
+document.querySelectorAll('#codecChips .chip').forEach(chip => chip.addEventListener('click', () => {
+  elements.compressionCodec.value = chip.dataset.value;
+  elements.compressionCodec.dispatchEvent(new Event('change', { bubbles: true }));
+}));
 function setStatus(message, type = '') {
   elements.status.textContent = message;
   elements.status.title = message;
@@ -173,18 +288,16 @@ async function installAvailableUpdate() {
     state.updateBusy = false;
   }
 }
-let fitTimer = null;
-function fitWindowToContent() {
-  clearTimeout(fitTimer);
-  // Keep the native window stable. Programmatic resizing after paint can
-  // invalidate Electron compositor frames on macOS.
-}
+// Fixed-size window: nothing to fit, only hide landmark labels that would collide.
+const stageCol = $('stageCol'), dock = $('dock');
+function fitWindowToContent() { declutterCaptions(); }
+
 function refreshReady() {
   const hasRequired = state.mode === 'compress'
-    ? state.videoPath && state.outputPath && state.metadata && Number(elements.targetSize.value) > 0
+    ? state.videoPath && state.outputPath && state.metadata && Number(elements.targetSize.value) > 0 && !state.planError
     : state.videoPath && state.subtitlePath && state.outputPath && state.metadata;
   elements.exportButton.disabled = state.exporting || !hasRequired;
-  elements.testButton.disabled = state.exporting || state.mode !== 'subtitles' || !(state.videoPath && state.subtitlePath && state.metadata);
+  elements.testButton.disabled = state.exporting || !(state.videoPath && state.metadata && (state.mode === 'compress' ? !state.planError : state.subtitlePath));
 }
 function subtitleFilenameToken() {
   const position = Math.max(0, Math.min(100, Number(elements.position.value))) / 100;
@@ -205,12 +318,13 @@ function updateAutomaticOutput() { state.outputPath = suggestOutput(); }
 function setMode(mode) {
   if (state.exporting) return;
   state.mode = mode === 'compress' ? 'compress' : 'subtitles';
-  localStorage.setItem(MODE_KEY, state.mode);
   const compressing = state.mode === 'compress';
   elements.subtitleMode.classList.toggle('active', !compressing);
   elements.compressMode.classList.toggle('active', compressing);
-  elements.compressionOptions.hidden = !compressing;
-  elements.subtitleOnly.forEach(element => { element.hidden = compressing; });
+  dock.classList.toggle('compress', compressing);
+  // inert (not hidden) so both layouts occupy the same dock and cross-fade.
+  document.querySelectorAll('.compress-only').forEach(element => element.toggleAttribute('inert', !compressing));
+  elements.subtitleOnly.forEach(element => element.toggleAttribute('inert', compressing));
   elements.previewNote.textContent = compressing
     ? 'Compression keeps the original aspect ratio and chooses bitrate and resolution for the target size.'
     : 'Position and size update instantly. The subtitle layer is rendered by libass.';
@@ -218,20 +332,33 @@ function setMode(mode) {
   elements.modeEyebrow.textContent = compressing ? 'TARGET-SIZE COMPRESSION' : 'LIBASS BURN-IN';
   elements.modeTitle.textContent = compressing ? 'Compress video' : 'Burn subtitles';
   updateAutomaticOutput();
-  setStatus(compressing ? 'Choose a video and target size. The compressed file saves beside the source automatically.' : 'Subtitle burn-in mode ready.');
+  refreshEncoderAvailability();
+  setStatus('');
   refreshReady();
   fitWindowToContent();
+}
+
+// Windows: GPU/CPU choice in both modes. macOS: Apple VideoToolbox or CPU for Compress; Burn always uses VideoToolbox.
+function refreshEncoderAvailability() {
+  const windows = state.platform === 'windows';
+  const mac = state.platform === 'macos';
+  const burnOnMac = mac && state.mode === 'subtitles';
+  const usable = (windows || mac) && !burnOnMac;
+  elements.windowsEncoder.disabled = !usable;
+  elements.windowsEncoderCard.classList.toggle('is-unavailable', !usable);
+  elements.windowsEncoderCard.title = burnOnMac ? 'Burn mode uses Apple VideoToolbox. Choose an encoder in Compress mode.' : windows || mac ? '' : 'Encoder choice is available on Windows and macOS.';
+  syncEncoderChips();
 }
 
 async function checkTools() {
   const result = await api.toolStatus();
   state.platform = result.platform || '';
   const windows = state.platform === 'windows';
+  const mac = state.platform === 'macos';
   document.documentElement.classList.toggle('platform-windows', windows);
-  elements.windowsEncoderCard.classList.toggle('is-unavailable', !windows);
-  elements.windowsEncoder.disabled = !windows;
-  elements.windowsPreset.disabled = !windows;
-  elements.encoderAvailability.textContent = windows ? 'Detecting…' : 'Windows only';
+  document.documentElement.classList.toggle('platform-macos', mac);
+  refreshEncoderAvailability();
+  elements.encoderAvailability.textContent = windows || mac ? 'Detecting…' : 'Unavailable';
   if (result.ok) {
     state.videoEncoder = result.videoEncoder;
     state.autoVideoEncoder10bit = result.autoVideoEncoder10bit;
@@ -244,27 +371,28 @@ async function checkTools() {
     if (savedCodec && !localStorage.getItem(COMPRESSION_CODEC_KEY)) localStorage.setItem(COMPRESSION_CODEC_KEY, savedCodec);
     if (elements.compressionCodec.selectedOptions[0]?.disabled) elements.compressionCodec.value = 'auto';
     const av1Labels = { nvenc: 'NVIDIA NVENC', qsv: 'Intel Quick Sync', amf: 'AMD AMF' };
+    updateEstimate();
     elements.compressionCodecHint.textContent = state.availableAv1Encoders.length
-      ? `Hardware AV1 ready: ${state.availableAv1Encoders.map(value => av1Labels[value]).join(' + ')}.`
-      : 'No usable hardware AV1 encoder detected; Auto uses H.264 or CPU fallback.';
-    if (windows) {
+      ? `AV1 ready on ${state.availableAv1Encoders.map(value => av1Labels[value]).join(' + ')}.`
+      : 'No hardware AV1 found. Auto uses H.264.';
+    document.querySelector('#codecChips [data-value=av1]').title = elements.compressionCodecHint.textContent;
+    if (windows || mac) {
       const available = new Set(state.availableVideoEncoders);
-      elements.windowsEncoder.disabled = false;
-      elements.windowsPreset.disabled = false;
       for (const option of elements.windowsEncoder.options) {
         if (!['auto', 'software'].includes(option.value)) option.disabled = !available.has(option.value);
       }
       if (elements.windowsEncoder.selectedOptions[0]?.disabled) elements.windowsEncoder.value = 'auto';
-      const labels = { nvenc: 'NVIDIA', amf: 'AMD', qsv: 'Intel' };
+      const labels = { nvenc: 'NVIDIA', amf: 'AMD', qsv: 'Intel', videotoolbox: 'Apple' };
       elements.encoderAvailability.textContent = state.availableVideoEncoders.length
         ? state.availableVideoEncoders.map(value => labels[value]).join(' + ') + ' detected'
         : 'CPU only';
       encoderPresetDescription();
     }
   } else {
-    elements.encoderAvailability.textContent = windows ? 'Unavailable' : 'Windows only';
+    elements.encoderAvailability.textContent = 'Unavailable';
     setStatus('FFmpeg with libass is required.', 'error');
   }
+  syncEncoderChips();
 }
 
 async function setVideo(videoPath) {
@@ -285,6 +413,7 @@ async function setVideo(videoPath) {
     elements.seekDuration.textContent = formatTime(state.metadata.duration);
     elements.seekCurrent.textContent = formatTime(elements.seek.value);
     updateAutomaticOutput();
+    updateEstimate();
     updateSubtitleWarning();
     if (state.metadata.isHdr) {
       setStatus(`${state.metadata.width}×${state.metadata.height}${canvas.padded ? ` → ${canvas.width}×${canvas.height} with automatic lower subtitle area` : ''} • ${formatTime(state.metadata.duration)} • ${state.metadata.dolbyVision ? 'Dolby Vision → HDR10' : 'HDR10'} • 10-bit`);
@@ -297,11 +426,20 @@ async function setVideo(videoPath) {
     schedulePreview();
   } catch (error) {
     state.metadata = null;
+    updateEstimate();
     setStatus(error.message, 'error');
   }
   if (state.platform === 'windows') encoderPresetDescription();
   refreshReady();
   fitWindowToContent();
+  // Auto-pick a matching subtitle, but never replace one the user chose by hand.
+  if (state.metadata && (!state.subtitlePath || state.subtitleAuto)) {
+    const found = await api.findSubtitle(videoPath).catch(() => '');
+    if (found && state.videoPath === videoPath) {
+      await setSubtitle(found, true);
+      if (!state.subtitleWarning) setStatus(`Matched subtitles: ${basename(found)}`);
+    }
+  }
 }
 
 function updateSubtitleWarning() {
@@ -313,8 +451,9 @@ function updateSubtitleWarning() {
   }
 }
 
-async function setSubtitle(subtitlePath) {
+async function setSubtitle(subtitlePath, auto = false) {
   if (!subtitlePath) return;
+  state.subtitleAuto = auto;
   clearTimeout(state.previewTimer);
   state.previewRequest += 1;
   state.previewPending = false;
@@ -424,30 +563,84 @@ elements.quality.addEventListener('input', () => {
   updateAutomaticOutput();
   refreshQualityDisplay();
 });
-elements.windowsEncoder.addEventListener('change', () => { saveSubtitleSettings(); encoderPresetDescription(); });
-elements.windowsPreset.addEventListener('change', () => { saveSubtitleSettings(); encoderPresetDescription(); });
+elements.windowsEncoder.addEventListener('change', () => { saveSubtitleSettings(); encoderPresetDescription(); syncEncoderChips(); updateEstimate(); });
 elements.seek.addEventListener('input', () => { elements.seekCurrent.textContent = formatTime(elements.seek.value); schedulePreview(220); });
 elements.subtitleMode.addEventListener('click', () => setMode('subtitles'));
 elements.compressMode.addEventListener('click', () => setMode('compress'));
+const MAX_TARGET_MB = 250;
+const targetRange = $('targetRange');
+function syncTargetRange() {
+  targetRange.value = String(Math.max(1, Math.min(MAX_TARGET_MB, Number(elements.targetSize.value) || 25)));
+  targetRange.refreshSlider();
+}
+// Live plan from the backend (same checks the export runs): fills the estimate tiles and blocks
+// targets that are too small for the video's length.
+let estimateTimer = 0, estimateRequest = 0;
+function updateEstimate() {
+  clearTimeout(estimateTimer);
+  estimateTimer = setTimeout(async () => {
+    const request = ++estimateRequest;
+    const target = Number(elements.targetSize.value);
+    const show = (res, fps, rate, note, bad) => {
+      elements.estRes.textContent = res; elements.estFps.textContent = fps; elements.estRate.textContent = rate;
+      elements.estNote.textContent = note;
+      elements.estNote.classList.toggle('error', Boolean(bad));
+      elements.estimate.classList.toggle('bad', Boolean(bad));
+      state.planError = bad ? note : '';
+      refreshReady();
+    };
+    if (!state.metadata) return show('-', '-', '-', 'Choose a video to see the estimate.', false);
+    // CPU is always x264 (H.264); a chosen GPU only offers AV1 if that GPU passed the AV1 test.
+    const encoder = elements.windowsEncoder.value;
+    const av1Pool = encoder === 'software' ? [] : encoder === 'auto' ? state.availableAv1Encoders : state.availableAv1Encoders.filter(value => value === encoder);
+    const av1 = av1Pool.length > 0 && elements.compressionCodec.value !== 'h264';
+    try {
+      const plan = await api.planCompression(state.metadata, target, av1, encoder);
+      $('cpuNote').hidden = !(plan.usesCpu && encoder !== 'software');
+      if (request !== estimateRequest) return;
+      const rate = plan.videoBitrate >= 1e6 ? `${(plan.videoBitrate / 1e6).toFixed(1)} Mbps` : `${Math.round(plan.videoBitrate / 1000)} kbps`;
+      const fps = Number.isInteger(plan.outputFps) ? plan.outputFps : plan.outputFps.toFixed(1);
+      show(`${plan.outputHeight}p`, `${fps} fps`, rate, 'Estimate only. Resolution and frame rate are chosen automatically to fit.', false);
+    } catch (error) {
+      if (request !== estimateRequest) return;
+      $('cpuNote').hidden = true;
+      show('-', '-', '-', String(error), true);
+    }
+  }, 120);
+}
+targetRange.addEventListener('input', () => {
+  elements.targetSize.value = targetRange.value;
+  elements.targetSize.dispatchEvent(new Event('input', { bubbles: true }));
+});
+elements.targetSize.addEventListener('change', () => {
+  const typed = Number(elements.targetSize.value);
+  elements.targetSize.value = String(Number.isFinite(typed) && typed >= 1 ? Math.min(MAX_TARGET_MB, Math.round(typed)) : 25);
+  elements.targetSize.dispatchEvent(new Event('input', { bubbles: true }));
+});
 elements.targetSize.addEventListener('input', () => {
+  syncTargetRange();
+  updateEstimate();
   if (state.mode !== 'compress') return;
   const target = Number(elements.targetSize.value);
-  if (Number.isFinite(target) && target >= 1 && target <= 10000) localStorage.setItem(COMPRESSION_TARGET_KEY, String(target));
+  if (Number.isFinite(target) && target >= 1 && target <= MAX_TARGET_MB) localStorage.setItem(COMPRESSION_TARGET_KEY, String(target));
   updateAutomaticOutput();
   refreshReady();
 });
 elements.compressionCodec.addEventListener('change', () => {
   localStorage.setItem(COMPRESSION_CODEC_KEY, elements.compressionCodec.value);
+  syncCodecChips();
+  updateEstimate();
 });
 function stepTargetSize(delta) {
   const current = Number(elements.targetSize.value) || 25;
-  elements.targetSize.value = String(Math.max(1, Math.min(10000, current + delta)));
+  elements.targetSize.value = String(Math.max(1, Math.min(MAX_TARGET_MB, current + delta)));
   elements.targetSize.dispatchEvent(new Event('input', { bubbles: true }));
 }
 elements.targetDown.addEventListener('click', () => stepTargetSize(-1));
 elements.targetUp.addEventListener('click', () => stepTargetSize(1));
 
-async function startCompression() {
+async function startCompression(isTest = false) {
+  if (state.planError) { setStatus(state.planError, 'error'); return; }
   clearTimeout(state.previewTimer);
   state.previewRequest += 1;
   state.exporting = true;
@@ -456,16 +649,19 @@ async function startCompression() {
   elements.progressWrap.hidden = false;
   elements.progressBar.style.width = '0%';
   elements.progressValue.textContent = '0%';
-  const targetSizeMB = Number(elements.targetSize.value);
+  const targetSizeMB = Math.min(MAX_TARGET_MB, Number(elements.targetSize.value));
   const codecPreference = elements.compressionCodec.value;
+  const clipDuration = isTest ? Math.min(30, state.metadata.duration) : 0;
+  const clipStart = isTest ? Math.max(0, Math.min(Number(elements.seek.value), state.metadata.duration - clipDuration)) : 0;
+  const outputPath = isTest ? `${dirname(state.videoPath)}${extless(state.videoPath)} — 30s compression test.mp4` : state.outputPath;
   const compressionEngine = state.platform === 'windows'
     ? 'Automatically testing NVIDIA, Intel, and AMD hardware encoders; CPU two-pass is the fallback.'
     : 'Using quality-first CPU two-pass compression.';
-  setStatus(`Compressing to approximately ${targetSizeMB} MB with automatic bitrate and resolution. ${compressionEngine}`);
+  setStatus(isTest ? `Compressing a 30-second test from ${formatTime(clipStart)} at the bitrate a ${targetSizeMB} MB file would use. ${compressionEngine}` : `Compressing to approximately ${targetSizeMB} MB with automatic bitrate and resolution. ${compressionEngine}`);
   fitWindowToContent();
   try {
     const result = await api.startCompression({
-      videoPath: state.videoPath, outputPath: state.outputPath, metadata: state.metadata, targetSizeMB, codecPreference,
+      videoPath: state.videoPath, outputPath, metadata: state.metadata, targetSizeMB, codecPreference, encoderPreference: elements.windowsEncoder.value, clipStart, clipDuration,
     });
     const actualMB = result.bytes / 1024 / 1024;
     const codecLabel = /^av1_/.test(result.encoder) ? 'AV1' : 'H.264';
@@ -533,7 +729,7 @@ async function startBurn(isTest = false) {
     fitWindowToContent();
   }
 }
-elements.testButton.addEventListener('click', () => startBurn(true));
+elements.testButton.addEventListener('click', () => state.mode === 'compress' ? startCompression(true) : startBurn(true));
 elements.exportButton.addEventListener('click', () => state.mode === 'compress' ? startCompression() : startBurn(false));
 elements.cancelButton.addEventListener('click', () => api.cancelExport());
 elements.updateButton.addEventListener('click', () => state.availableUpdate ? installAvailableUpdate() : checkForUpdates(true));
@@ -556,11 +752,16 @@ for (const target of [elements.videoPicker, elements.subtitlePicker]) {
 
 restoreSubtitleSettings();
 const savedCompressionTarget = Number(localStorage.getItem(COMPRESSION_TARGET_KEY));
-if (Number.isFinite(savedCompressionTarget) && savedCompressionTarget >= 1 && savedCompressionTarget <= 10000) {
+if (Number.isFinite(savedCompressionTarget) && savedCompressionTarget >= 1 && savedCompressionTarget <= 250) {
   elements.targetSize.value = String(savedCompressionTarget);
 }
-setMode(localStorage.getItem(MODE_KEY));
+syncTargetRange();
+refreshSliders();
+syncEncoderChips();
+syncCodecChips();
+setMode('subtitles'); // always start on Burn
 refreshQualityDisplay();
+fitWindowToContent();
 checkTools();
 checkForUpdates();
 window.addEventListener('load', fitWindowToContent, { once: true });
