@@ -7,11 +7,8 @@ use std::{
     fs,
     io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
+    process::{Child, Command, Stdio},
+    sync::{Arc, Mutex},
 };
 use tauri::{Emitter, State, WebviewWindow};
 use tempfile::TempDir;
@@ -29,25 +26,83 @@ const MAX_FONT_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Default)]
 pub struct AppState {
-    active_pid: Arc<Mutex<Option<u32>>>,
-    job_running: Arc<AtomicBool>,
-    custom_ffmpeg: Mutex<Option<String>>,
+    export: Arc<Mutex<ExportJob>>,
+    media_tools: Mutex<MediaTools>,
 }
 
-struct JobGuard(Arc<AtomicBool>);
+const EXPORT_CANCELLED: &str = "Export cancelled.";
+
+#[derive(Default)]
+struct ExportJob {
+    running: bool,
+    cancelled: bool,
+    child: Option<Child>,
+}
+
+impl ExportJob {
+    fn check_cancelled(&self) -> Result<(), String> {
+        if self.cancelled {
+            return Err(EXPORT_CANCELLED.into());
+        }
+        Ok(())
+    }
+}
+
+struct JobGuard(Arc<Mutex<ExportJob>>);
 
 impl Drop for JobGuard {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        let mut job = self.0.lock().unwrap();
+        if let Some(mut child) = job.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        job.running = false;
     }
 }
 
 fn reserve_job(state: &AppState) -> Result<JobGuard, String> {
-    state
-        .job_running
-        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .map(|_| JobGuard(state.job_running.clone()))
-        .map_err(|_| "An export is already running.".to_owned())
+    let mut job = state.export.lock().unwrap();
+    if job.running {
+        return Err("An export is already running.".into());
+    }
+    job.running = true;
+    job.cancelled = false;
+    Ok(JobGuard(state.export.clone()))
+}
+
+struct StagedOutput {
+    _dir: TempDir,
+    path: PathBuf,
+}
+
+impl StagedOutput {
+    fn new(destination: &str, source: &str) -> Result<Self, String> {
+        let destination = Path::new(destination);
+        if let Ok(existing) = destination.canonicalize() {
+            if Path::new(source).canonicalize().ok().as_ref() == Some(&existing) {
+                return Err("Choose an output path different from the source video.".into());
+            }
+        }
+        let name = destination.file_name().ok_or("Invalid output filename.")?;
+        let parent = destination
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty());
+        let dir = tempfile::Builder::new()
+            .prefix(".subaroll-")
+            .tempdir_in(parent.unwrap_or_else(|| Path::new(".")))
+            .map_err(|error| format!("Could not prepare the output folder: {error}"))?;
+        let path = dir.path().join(name);
+        Ok(Self { _dir: dir, path })
+    }
+
+    fn commit(&self, destination: &str, active: &Mutex<ExportJob>) -> Result<(), String> {
+        // Serialize publishing with cancellation, so an existing export is safe until commit.
+        let job = active.lock().unwrap();
+        job.check_cancelled()?;
+        fs::rename(&self.path, destination)
+            .map_err(|error| format!("Could not save the finished export: {error}"))
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -57,10 +112,17 @@ pub struct ToolStatus {
     ffmpeg: Option<String>,
     video_encoder: Option<String>,
     auto_video_encoder_10bit: Option<String>,
+    apple_burn_available: bool,
     platform: String,
     available_video_encoders: Vec<String>,
     available_av1_encoders: Vec<String>,
     error: Option<String>,
+}
+
+#[derive(Default)]
+struct MediaTools {
+    custom_ffmpeg: Option<String>,
+    cached: Option<Tools>,
 }
 
 #[derive(Clone)]
@@ -128,7 +190,7 @@ fn default_windows_preset() -> String {
 #[serde(rename_all = "camelCase")]
 pub struct PreviewInput {
     video_path: String,
-    subtitle_path: String,
+    subtitle_path: Option<String>,
     metadata: Option<MediaMetadata>,
     settings: SubtitleSettings,
     time: f64,
@@ -172,16 +234,8 @@ fn default_compression_codec() -> String {
 #[serde(rename_all = "camelCase")]
 pub struct PreviewResult {
     frame: String,
-    subtitles: String,
     font_count: usize,
-    layout: PreviewLayout,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PreviewLayout {
-    play_res_y: f64,
-    line_count: usize,
+    subtitle_error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -219,7 +273,6 @@ pub struct CompressionPlan {
     video_bitrate: u64,
     audio_bitrate: u64,
     output_height: u64,
-    output_fps: f64,
 }
 
 fn background_command(command: &str) -> Command {
@@ -416,12 +469,17 @@ fn find_tools(custom: Option<String>) -> Option<Tools> {
 }
 
 fn tools_for(state: &AppState) -> Result<Tools, String> {
-    let custom = state
-        .custom_ffmpeg
+    let mut media_tools = state
+        .media_tools
         .lock()
-        .map_err(|_| "Tool state is unavailable")?
-        .clone();
-    find_tools(custom).ok_or_else(|| "FFmpeg with libass is required.".into())
+        .map_err(|_| "Tool state is unavailable")?;
+    if let Some(tools) = &media_tools.cached {
+        return Ok(tools.clone());
+    }
+    let tools = find_tools(media_tools.custom_ffmpeg.clone())
+        .ok_or_else(|| "FFmpeg with libass is required.".to_owned())?;
+    media_tools.cached = Some(tools.clone());
+    Ok(tools)
 }
 
 #[tauri::command]
@@ -446,6 +504,8 @@ pub fn tool_status(state: State<AppState>) -> ToolStatus {
             };
             ToolStatus {
                 ok: true,
+                apple_burn_available: cfg!(target_os = "macos")
+                    && encoder_usable(&t.ffmpeg, "hevc_videotoolbox", false),
                 auto_video_encoder_10bit: cfg!(windows)
                     .then(|| windows_burn_encoder(&t.ffmpeg, true, "auto").to_owned()),
                 ffmpeg: Some(t.ffmpeg),
@@ -461,6 +521,7 @@ pub fn tool_status(state: State<AppState>) -> ToolStatus {
             ffmpeg: None,
             video_encoder: None,
             auto_video_encoder_10bit: None,
+            apple_burn_available: false,
             platform: std::env::consts::OS.into(),
             available_video_encoders: Vec::new(),
             available_av1_encoders: Vec::new(),
@@ -475,7 +536,10 @@ pub fn choose_ffmpeg(state: State<AppState>) -> ToolStatus {
         .set_title("Choose FFmpeg with libass support")
         .pick_file();
     if let Some(path) = selected {
-        *state.custom_ffmpeg.lock().unwrap() = Some(path.to_string_lossy().into_owned());
+        *state.media_tools.lock().unwrap() = MediaTools {
+            custom_ffmpeg: Some(path.to_string_lossy().into_owned()),
+            cached: None,
+        };
     }
     tool_status(state)
 }
@@ -900,7 +964,6 @@ struct Prepared {
     ass: PathBuf,
     fonts: PathBuf,
     font_count: usize,
-    ass_text: String,
 }
 
 fn split_row(row: &str, count: usize) -> Vec<String> {
@@ -916,6 +979,15 @@ fn split_row(row: &str, count: usize) -> Vec<String> {
     }
     parts.push(rest.into());
     parts
+}
+
+fn explicit_position(text: &str) -> bool {
+    text.split('}')
+        .filter_map(|part| part.split_once('{'))
+        .any(|(_, tags)| {
+            let tags = tags.to_ascii_lowercase();
+            tags.contains("\\pos(") || tags.contains("\\move(")
+        })
 }
 
 fn transform_ass(source: &str, settings: &SubtitleSettings, plain: bool, aspect: f64) -> String {
@@ -974,7 +1046,7 @@ fn transform_ass(source: &str, settings: &SubtitleSettings, plain: bool, aspect:
                 .iter()
                 .position(|x| x == "text")
                 .unwrap_or(f.len() - 1);
-            if !f[ti].contains("\\pos") && !f[ti].contains("\\move") {
+            if f.len() == event_fmt.len() && !explicit_position(&f[ti]) {
                 dialogue_styles.insert(f[si].trim().to_owned());
             }
         }
@@ -1038,7 +1110,9 @@ fn transform_ass(source: &str, settings: &SubtitleSettings, plain: bool, aspect:
                 .iter()
                 .position(|x| x == "text")
                 .unwrap_or(f.len() - 1);
-            if dialogue_styles.contains(f[si].trim()) {
+            if f.len() == event_fmt.len() && !explicit_position(&f[ti])
+                && (plain || dialogue_styles.contains(f[si].trim()))
+            {
                 let scaled = fs_re
                     .replace_all(&f[ti], |c: &regex::Captures| {
                         format!("\\fs{}", fmt(c[1].parse::<f64>().unwrap_or(0.0) * scale))
@@ -1163,30 +1237,19 @@ fn prepare_subtitle(
         ass,
         fonts,
         font_count: count,
-        ass_text: result,
     })
 }
 
-fn subtitle_filter(
-    p: &Prepared,
-    delay: f64,
-    preview: Option<f64>,
-    alpha: bool,
-    timeline: f64,
-) -> String {
+fn subtitle_filter(p: &Prepared, delay: f64, timeline: f64) -> String {
     let subs = format!(
-        "subtitles=filename='{}':fontsdir='{}'{}",
+        "subtitles=filename='{}':fontsdir='{}'",
         escape_filter_path(&p.ass),
         escape_filter_path(&p.fonts),
-        if alpha { ":alpha=1" } else { "" }
     );
-    if let Some(t) = preview {
-        return format!("setpts=PTS+{}/TB,{}", fmt((t - delay).max(0.0)), subs);
-    }
     let offset = timeline.max(0.0) - delay;
     if offset != 0.0 {
         format!(
-            "setpts=PTS{sign}{n}/TB,{subs},setpts=PTS{back}{n}/TB",
+            "settb=AVTB,setpts=PTS{sign}{n}/TB,{subs},setpts=PTS{back}{n}/TB",
             sign = if offset < 0.0 { "-" } else { "+" },
             back = if offset < 0.0 { "+" } else { "-" },
             n = fmt(offset.abs())
@@ -1195,6 +1258,24 @@ fn subtitle_filter(
         subs
     }
 }
+
+fn burn_filters(p: &Prepared, m: &MediaMetadata, delay: f64, timeline: f64) -> Vec<String> {
+    let c = canvas(m);
+    let mut filters = Vec::new();
+    if c.padded {
+        filters.push(format!("pad={}:{}:0:0:black", c.width, c.height));
+    }
+    let format = if m.is_hdr || m.bit_depth > 8 {
+        "format=p010le"
+    } else {
+        "format=yuv420p"
+    };
+    filters.push(format.into());
+    filters.push(subtitle_filter(p, delay, timeline));
+    filters.push(format.into());
+    filters
+}
+
 fn fps(v: &str) -> f64 {
     ratio(v, v.parse().unwrap_or(25.0)).max(0.001)
 }
@@ -1202,162 +1283,111 @@ fn preview_time(m: &MediaMetadata, t: f64) -> f64 {
     t.max(0.0)
         .min((m.duration - (0.1f64).max(2.0 / fps(&m.fps))).max(0.0))
 }
-fn ass_time(v: &str) -> f64 {
-    let p: Vec<_> = v.trim().split([':', '.']).collect();
-    if p.len() < 3 {
-        return 0.0;
-    }
-    p[0].parse::<f64>().unwrap_or(0.0) * 3600.0
-        + p[1].parse::<f64>().unwrap_or(0.0) * 60.0
-        + p[2].parse::<f64>().unwrap_or(0.0)
-        + p.get(3)
-            .and_then(|x| format!("0.{x}").parse().ok())
-            .unwrap_or(0.0)
-}
-fn active_lines(text: &str, time: f64) -> usize {
-    let mut section = "".to_owned();
-    let mut format = Vec::<String>::new();
-    let mut max = 1;
-    for line in text.lines() {
-        if line.starts_with('[') && line.ends_with(']') {
-            section = line[1..line.len() - 1].to_lowercase()
-        }
-        if section != "events" {
-            continue;
-        }
-        if line.to_lowercase().starts_with("format:") {
-            format = line[7..]
-                .split(',')
-                .map(|x| x.trim().to_lowercase())
-                .collect()
-        }
-        if line.to_lowercase().starts_with("dialogue:") && !format.is_empty() {
-            let f = split_row(&line[9..], format.len());
-            let at = |n: &str| format.iter().position(|x| x == n).unwrap_or(0);
-            if time >= ass_time(&f[at("start")]) && time < ass_time(&f[at("end")]) {
-                max = max.max(f[at("text")].to_lowercase().matches("\\n").count() + 1)
-            }
-        }
-    }
-    max
-}
-
 #[tauri::command]
 pub async fn render_preview(
     state: State<'_, AppState>,
     input: PreviewInput,
 ) -> Result<PreviewResult, String> {
     let tools = tools_for(&state)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let m = match input.metadata {
-            Some(m) => m,
-            None => probe_media(&tools.ffprobe, &input.video_path)?,
-        };
-        let c = canvas(&m);
-        let p = prepare_subtitle(&tools.ffmpeg, &input.subtitle_path, &m, &input.settings)?;
-        let frame = p._dir.path().join("frame.png");
-        let subs = p._dir.path().join("subtitles.png");
-        let time = preview_time(&m, input.time);
-        let mut ff = Vec::<String>::new();
-        if c.padded {
-            ff.push(format!("pad={}:{}:0:0:black", c.width, c.height))
+    tauri::async_runtime::spawn_blocking(move || preview_video(&tools, input))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn preview_video(tools: &Tools, input: PreviewInput) -> Result<PreviewResult, String> {
+    let m = match input.metadata {
+        Some(m) => m,
+        None => probe_media(&tools.ffprobe, &input.video_path)?,
+    };
+    let time = preview_time(&m, input.time);
+    let mut subtitle_error = None;
+    if let Some(path) = input
+        .subtitle_path
+        .as_deref()
+        .filter(|path| !path.is_empty())
+    {
+        let render = prepare_subtitle(&tools.ffmpeg, path, &m, &input.settings).and_then(|p| {
+            let ff = burn_filters(&p, &m, input.settings.delay_seconds, time);
+            decode_preview_frame(tools, &input.video_path, &m, time, ff)
+                .map(|frame| (frame, p.font_count))
+        });
+        match render {
+            Ok((frame, font_count)) => {
+                return Ok(PreviewResult {
+                    frame,
+                    font_count,
+                    subtitle_error: None,
+                })
+            }
+            Err(error) => subtitle_error = Some(error),
         }
-        if m.is_hdr {
-            ff.extend(
-                [
-                    "zscale=t=linear:npl=100",
-                    "format=gbrpf32le",
-                    "zscale=p=bt709",
-                    "tonemap=hable:desat=0",
-                    "zscale=t=bt709:m=bt709:r=tv",
-                ]
-                .map(str::to_owned),
-            )
-        }
-        ff.push("format=rgb24".into());
-        run_output_with_limit(
-            &tools.ffmpeg,
-            &[
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-y",
-                "-ss",
-                &fmt(time),
-                "-noautorotate",
-                "-i",
-                &input.video_path,
-                "-vf",
-                &ff.join(","),
-                "-frames:v",
-                "1",
-                "-c:v",
-                "png",
-                "-pix_fmt",
-                "rgb24",
-                frame.to_string_lossy().as_ref(),
-            ]
-            .into_iter()
-            .map(|x| x.to_owned())
-            .collect::<Vec<_>>(),
-            MAX_PREVIEW_FRAME_BYTES,
-        )?;
-        let filter = format!(
-            "format=rgba,{}",
-            subtitle_filter(&p, input.settings.delay_seconds, Some(time), true, 0.0)
-        );
-        run_output(
-            &tools.ffmpeg,
-            &[
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-y",
-                "-f",
-                "lavfi",
-                "-i",
-                &format!(
-                    "color=c=black@0:s={}x{}:r=1,format=rgba,settb=AVTB",
-                    c.width, c.height
-                ),
-                "-vf",
-                &filter,
-                "-frames:v",
-                "1",
-                "-c:v",
-                "png",
-                "-pix_fmt",
-                "rgba",
-                subs.to_string_lossy().as_ref(),
-            ]
-            .into_iter()
-            .map(|x| x.to_owned())
-            .collect::<Vec<_>>(),
-        )?;
-        let play = Regex::new(r"(?im)^PlayResY:\s*([\d.]+)")
-            .unwrap()
-            .captures(&p.ass_text)
-            .and_then(|x| x[1].parse().ok())
-            .unwrap_or(360.0);
-        let line_count = active_lines(&p.ass_text, (time - input.settings.delay_seconds).max(0.0));
-        Ok(PreviewResult {
-            frame: format!(
-                "data:image/png;base64,{}",
-                BASE64.encode(fs::read(frame).map_err(|e| e.to_string())?)
-            ),
-            subtitles: format!(
-                "data:image/png;base64,{}",
-                BASE64.encode(fs::read(subs).map_err(|e| e.to_string())?)
-            ),
-            font_count: p.font_count,
-            layout: PreviewLayout {
-                play_res_y: play,
-                line_count,
-            },
-        })
+    }
+    let frame = decode_preview_frame(tools, &input.video_path, &m, time, Vec::new())?;
+    Ok(PreviewResult {
+        frame,
+        font_count: 0,
+        subtitle_error,
     })
-    .await
-    .map_err(|e| e.to_string())?
+}
+
+fn decode_preview_frame(
+    tools: &Tools,
+    video: &str,
+    m: &MediaMetadata,
+    time: f64,
+    mut ff: Vec<String>,
+) -> Result<String, String> {
+    if m.is_hdr {
+        ff.extend(
+            [
+                "zscale=t=linear:npl=100",
+                "format=gbrpf32le",
+                "zscale=p=bt709",
+                "tonemap=hable:desat=0",
+                "zscale=t=bt709:m=bt709:r=tv",
+            ]
+            .map(str::to_owned),
+        )
+    }
+    // Composite at the source size. Only the display image is reduced.
+    ff.push("scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:flags=bilinear".into());
+    ff.push("format=rgb24".into());
+    let frame = run_output_with_limit(
+        &tools.ffmpeg,
+        &[
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            &fmt(time),
+            "-noautorotate",
+            "-i",
+            video,
+            "-map",
+            "0:V:0",
+            "-vf",
+            &ff.join(","),
+            "-frames:v",
+            "1",
+            "-c:v",
+            "png",
+            "-compression_level",
+            "1",
+            "-pix_fmt",
+            "rgb24",
+            "-f",
+            "image2pipe",
+            "pipe:1",
+        ]
+        .into_iter()
+        .map(|x| x.to_owned())
+        .collect::<Vec<_>>(),
+        MAX_PREVIEW_FRAME_BYTES,
+    )?;
+    if frame.is_empty() {
+        return Err("No video frame was decoded at this time.".into());
+    }
+    Ok(format!("data:image/png;base64,{}", BASE64.encode(frame)))
 }
 
 fn color_args(m: &MediaMetadata) -> Vec<String> {
@@ -1504,7 +1534,10 @@ fn encoder_args(
     let quality = q.round().clamp(60.0, 100.0) as i64;
     let ten = m.is_hdr || m.bit_depth > 8;
     let mut a: Vec<String>;
-    if cfg!(target_os = "macos") && supports_encoder(ffmpeg, "hevc_videotoolbox") {
+    if cfg!(target_os = "macos")
+        && matches!(settings.windows_encoder.as_str(), "auto" | "videotoolbox")
+        && encoder_usable(ffmpeg, "hevc_videotoolbox", ten)
+    {
         // VideoToolbox q100 switches into a pathological near-lossless mode and
         // can exceed the source bitrate by more than 10x. q95 is the practical
         // maximum-quality setting; the source-aware VBV ceiling remains active.
@@ -1627,37 +1660,72 @@ fn run_progress(
     base: f64,
     span: f64,
     emit: &dyn Fn(f64),
-    active: &Arc<Mutex<Option<u32>>>,
+    active: &Mutex<ExportJob>,
 ) -> Result<(), String> {
-    let mut child = background_command(command)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    *active.lock().unwrap() = Some(child.id());
+    let (child_id, stdout, stderr) = {
+        let mut job = active.lock().unwrap();
+        job.check_cancelled()?;
+        let mut child = background_command(command)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        let pipes = (
+            child.id(),
+            child.stdout.take().unwrap(),
+            child.stderr.take().unwrap(),
+        );
+        job.child = Some(child);
+        pipes
+    };
+    #[cfg(not(target_os = "macos"))]
+    let _ = child_id;
     #[cfg(target_os = "macos")]
-    let _awake = Command::new("caffeinate")
-        .args(["-i", "-w", &child.id().to_string()])
+    let awake = Command::new("/usr/bin/caffeinate")
+        .args(["-i", "-w", &child_id.to_string()])
         .spawn()
         .ok();
-    let stderr = child.stderr.take().unwrap();
     let err_thread = std::thread::spawn(move || read_capped(stderr, MAX_TOOL_OUTPUT_BYTES));
-    if let Some(stdout) = child.stdout.take() {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Some(v) = line
-                .strip_prefix("out_time_us=")
-                .or_else(|| line.strip_prefix("out_time_ms="))
-            {
-                if let Ok(us) = v.parse::<f64>() {
-                    emit(base + (us / 1_000_000.0 / duration.max(0.1)).clamp(0.0, 1.0) * span);
-                }
+    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        if let Some(v) = line
+            .strip_prefix("out_time_us=")
+            .or_else(|| line.strip_prefix("out_time_ms="))
+        {
+            if let Ok(us) = v.parse::<f64>() {
+                emit(base + (us / 1_000_000.0 / duration.max(0.1)).clamp(0.0, 1.0) * span);
             }
         }
     }
-    let status = child.wait();
-    *active.lock().unwrap() = None;
+
+    // Release the lock between polls so Cancel still works if the tool closes stdout early.
+    let status = loop {
+        {
+            let mut job = active.lock().unwrap();
+            match job.child.as_mut().unwrap().try_wait() {
+                Ok(Some(status)) => {
+                    job.child.take();
+                    break Ok(status);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let mut child = job.child.take().unwrap();
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break Err(error);
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    };
+    #[cfg(target_os = "macos")]
+    if let Some(mut awake) = awake {
+        let _ = awake.kill();
+        let _ = awake.wait();
+    }
     let (stderr, truncated) = err_thread.join().unwrap_or_default();
+    active.lock().unwrap().check_cancelled()?;
     let status = status.map_err(|e| e.to_string())?;
     if status.success() {
         Ok(())
@@ -1678,159 +1746,148 @@ pub async fn start_export(
 ) -> Result<ExportResult, String> {
     let job_guard = reserve_job(&state)?;
     let tools = tools_for(&state)?;
-    let active = state.active_pid.clone();
+    let active = state.export.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _job_guard = job_guard;
         let emit = |v: f64| {
             let _ = window.emit("export-progress", v);
         };
-        let m = match input.metadata {
-            Some(m) => m,
-            None => probe_media(&tools.ffprobe, &input.video_path)?,
-        };
-        let c = canvas(&m);
-        let p = prepare_subtitle(&tools.ffmpeg, &input.subtitle_path, &m, &input.settings)?;
-        let start = input.clip_start.max(0.0).min(m.duration);
-        let duration = if input.clip_duration > 0.0 {
-            input.clip_duration.max(0.1).min(m.duration - start)
-        } else {
-            0.0
-        };
-        let burn = subtitle_filter(&p, input.settings.delay_seconds, None, false, start);
-        let ten = m.is_hdr || m.bit_depth > 8;
-        let mut filters = Vec::new();
-        if c.padded {
-            filters.push(format!("pad={}:{}:0:0:black", c.width, c.height))
-        }
-        filters.push(
-            if ten {
-                "format=p010le"
-            } else {
-                "format=yuv420p"
-            }
-            .into(),
-        );
-        filters.push(burn);
-        filters.push(
-            if ten {
-                "format=p010le"
-            } else {
-                "format=yuv420p"
-            }
-            .into(),
-        );
-        let (encoder, enc, ten_bit) = encoder_args(&tools.ffmpeg, &m, &input.settings);
-        let ext = Path::new(&input.output_path)
-            .extension()
-            .and_then(|x| x.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-        let copy = ext == "mkv"
-            || m.audio_streams
-                .iter()
-                .all(|a| matches!(a.codec.as_str(), "aac" | "ac3" | "eac3" | "mp3" | "alac"));
-        let mut args = vec!["-hide_banner".into(), "-y".into()];
-        if start > 0.0 {
-            args.extend(["-ss".into(), fmt(start)])
-        }
-        args.extend([
-            "-noautorotate".into(),
-            "-i".into(),
-            input.video_path.clone(),
-            "-map".into(),
-            "0:v:0".into(),
-            "-map".into(),
-            "0:a?".into(),
-            "-vf".into(),
-            filters.join(","),
-        ]);
-        args.extend(enc);
-        if copy {
-            args.extend(["-c:a".into(), "copy".into()])
-        } else {
-            args.extend(["-c:a".into(), "aac".into(), "-b:a".into(), "256k".into()])
-        }
-        args.extend([
-            "-map_metadata".into(),
-            "0".into(),
-            "-map_chapters".into(),
-            "0".into(),
-        ]);
-        if duration > 0.0 {
-            args.extend(["-t".into(), fmt(duration)])
-        }
-        args.extend([
-            "-fps_mode".into(),
-            "passthrough".into(),
-            "-progress".into(),
-            "pipe:1".into(),
-            "-nostats".into(),
-            input.output_path.clone(),
-        ]);
-        run_progress(
-            &tools.ffmpeg,
-            &args,
-            if duration > 0.0 { duration } else { m.duration },
-            0.0,
-            1.0,
-            &emit,
-            &active,
-        )?;
-        let out = probe_media(&tools.ffprobe, &input.output_path)?;
-        if out.width != c.width || out.height != c.height {
-            return Err(format!(
-                "Export safety check failed: expected {}×{}, but output is {}×{}.",
-                c.width, c.height, out.width, out.height
-            ));
-        }
-        if m.is_hdr && !out.is_hdr {
-            return Err(
-                "Export safety check failed: HDR color signaling was not preserved.".into(),
-            );
-        }
-        if m.bit_depth > 8 && out.bit_depth < 10 {
-            return Err(
-                "Export safety check failed: the 10-bit source was reduced to 8-bit.".into(),
-            );
-        }
-        if (fps(&m.fps) - fps(&out.fps)).abs() > 0.01 {
-            return Err(format!(
-                "Export safety check failed: source is {:.3} fps, but output is {:.3} fps.",
-                fps(&m.fps), fps(&out.fps)
-            ));
-        }
-        let expected_aspect = c.width as f64 / c.height.max(1) as f64;
-        if (out.display_aspect - expected_aspect).abs() > 0.001 {
-            return Err("Export safety check failed: the output display aspect ratio changed.".into());
-        }
-        if out.rotation != m.rotation {
-            return Err("Export safety check failed: the output orientation changed.".into());
-        }
-        if input.settings.quality >= 88.0 && m.bit_rate > 0 && out.bit_rate > 0
-            && out.bit_rate < (m.bit_rate as f64 * 0.65) as u64
-        {
-            return Err(format!(
-                "Export safety check failed: encoder bitrate undershot the source ({:.1} vs {:.1} Mbps).",
-                out.bit_rate as f64 / 1_000_000.0,
-                m.bit_rate as f64 / 1_000_000.0
-            ));
-        }
-        emit(1.0);
-        Ok(ExportResult {
-            output: input.output_path,
-            font_count: p.font_count,
-            encoder,
-            quality: input.settings.quality.round() as i64,
-            hdr: m.is_hdr,
-            ten_bit,
-            dolby_vision_converted: m.dolby_vision,
-            clip_start: start,
-            clip_duration: duration,
-            audio_copied: copy,
-        })
+        burn_video(&tools, input, &active, &emit)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+fn burn_video(
+    tools: &Tools,
+    input: ExportInput,
+    active: &Mutex<ExportJob>,
+    emit: &dyn Fn(f64),
+) -> Result<ExportResult, String> {
+    let m = match input.metadata {
+        Some(m) => m,
+        None => probe_media(&tools.ffprobe, &input.video_path)?,
+    };
+    let staged = StagedOutput::new(&input.output_path, &input.video_path)?;
+    let staged_path = staged.path.to_string_lossy();
+    let c = canvas(&m);
+    let p = prepare_subtitle(&tools.ffmpeg, &input.subtitle_path, &m, &input.settings)?;
+    let start = input.clip_start.max(0.0).min(m.duration);
+    let duration = if input.clip_duration > 0.0 {
+        input.clip_duration.max(0.1).min(m.duration - start)
+    } else {
+        0.0
+    };
+    let filters = burn_filters(&p, &m, input.settings.delay_seconds, start);
+    let (encoder, enc, ten_bit) = encoder_args(&tools.ffmpeg, &m, &input.settings);
+    let ext = Path::new(&input.output_path)
+        .extension()
+        .and_then(|x| x.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let copy = ext == "mkv"
+        || m.audio_streams
+            .iter()
+            .all(|a| matches!(a.codec.as_str(), "aac" | "ac3" | "eac3" | "mp3" | "alac"));
+    let mut args = vec!["-hide_banner".into(), "-y".into()];
+    if start > 0.0 {
+        args.extend(["-ss".into(), fmt(start)])
+    }
+    args.extend([
+        "-noautorotate".into(),
+        "-i".into(),
+        input.video_path.clone(),
+        "-map".into(),
+        "0:v:0".into(),
+        "-map".into(),
+        "0:a?".into(),
+        "-vf".into(),
+        filters.join(","),
+    ]);
+    args.extend(enc);
+    if copy {
+        args.extend(["-c:a".into(), "copy".into()])
+    } else {
+        args.extend(["-c:a".into(), "aac".into(), "-b:a".into(), "256k".into()])
+    }
+    args.extend([
+        "-map_metadata".into(),
+        "0".into(),
+        "-map_chapters".into(),
+        "0".into(),
+    ]);
+    if duration > 0.0 {
+        args.extend(["-t".into(), fmt(duration)])
+    }
+    args.extend([
+        "-fps_mode".into(),
+        "passthrough".into(),
+        "-progress".into(),
+        "pipe:1".into(),
+        "-nostats".into(),
+        staged_path.to_string(),
+    ]);
+    run_progress(
+        &tools.ffmpeg,
+        &args,
+        if duration > 0.0 { duration } else { m.duration },
+        0.0,
+        1.0,
+        emit,
+        active,
+    )?;
+    let out = probe_media(&tools.ffprobe, &staged_path)?;
+    if out.width != c.width || out.height != c.height {
+        return Err(format!(
+            "Export safety check failed: expected {}×{}, but output is {}×{}.",
+            c.width, c.height, out.width, out.height
+        ));
+    }
+    if m.is_hdr && !out.is_hdr {
+        return Err("Export safety check failed: HDR color signaling was not preserved.".into());
+    }
+    if m.bit_depth > 8 && out.bit_depth < 10 {
+        return Err("Export safety check failed: the 10-bit source was reduced to 8-bit.".into());
+    }
+    if (fps(&m.fps) - fps(&out.fps)).abs() > 0.01 {
+        return Err(format!(
+            "Export safety check failed: source is {:.3} fps, but output is {:.3} fps.",
+            fps(&m.fps),
+            fps(&out.fps)
+        ));
+    }
+    let expected_aspect = c.width as f64 / c.height.max(1) as f64;
+    if (out.display_aspect - expected_aspect).abs() > 0.001 {
+        return Err("Export safety check failed: the output display aspect ratio changed.".into());
+    }
+    if out.rotation != m.rotation {
+        return Err("Export safety check failed: the output orientation changed.".into());
+    }
+    if input.settings.quality >= 88.0
+        && m.bit_rate > 0
+        && out.bit_rate > 0
+        && out.bit_rate < (m.bit_rate as f64 * 0.65) as u64
+    {
+        return Err(format!(
+            "Export safety check failed: encoder bitrate undershot the source ({:.1} vs {:.1} Mbps).",
+            out.bit_rate as f64 / 1_000_000.0,
+            m.bit_rate as f64 / 1_000_000.0
+        ));
+    }
+    staged.commit(&input.output_path, active)?;
+    emit(1.0);
+    Ok(ExportResult {
+        output: input.output_path,
+        font_count: p.font_count,
+        encoder,
+        quality: input.settings.quality.round() as i64,
+        hdr: m.is_hdr,
+        ten_bit,
+        dolby_vision_converted: m.dolby_vision,
+        clip_start: start,
+        clip_duration: duration,
+        audio_copied: copy,
+    })
 }
 
 const MAX_COMPRESSION_MB: f64 = 250.0;
@@ -1905,14 +1962,13 @@ fn compression_plan_bytes(m: &MediaMetadata, target: u64) -> CompressionPlan {
         // The size goal shrinks with it, otherwise constant-QP encoders would chase the unreachable target.
         target = target.min(((video + audio) as f64 * m.duration.max(0.1) / 8.0 / SIZE_BUDGET) as u64);
     }
-    let (max_h, output_fps) = compression_geometry(video, false, fps(&m.fps));
+    let max_h = compression_height(video, false, fps(&m.fps));
     CompressionPlan {
         target_bytes: target,
         total_bitrate: total,
         video_bitrate: video,
         audio_bitrate: audio,
         output_height: m.height.min(max_h),
-        output_fps,
     }
 }
 
@@ -1921,7 +1977,7 @@ fn compression_plan_bytes(m: &MediaMetadata, target: u64) -> CompressionPlan {
 pub struct CompressionEstimate {
     video_bitrate: u64,
     output_height: u64,
-    output_fps: f64,
+    bitrate_capped: bool,
     min_mb: f64,
     uses_cpu: bool,
 }
@@ -1937,16 +1993,16 @@ pub fn plan_compression(
     check_compression_target(&metadata, target_size_mb)?;
     let plan = compression_plan(&metadata, target_size_mb);
     let uses_cpu = use_cpu_encoder(plan.video_bitrate, &encoder_preference);
-    let (mut height, mut output_fps) = (plan.output_height, plan.output_fps);
-    if av1 && !uses_cpu {
-        let (max_height, rate) = compression_geometry(plan.video_bitrate, true, fps(&metadata.fps));
-        height = metadata.height.min(max_height);
-        output_fps = rate;
-    }
+    let source_fps = fps(&metadata.fps);
+    let height = if av1 && !uses_cpu {
+        metadata.height.min(compression_height(plan.video_bitrate, true, source_fps))
+    } else {
+        plan.output_height
+    };
     Ok(CompressionEstimate {
         video_bitrate: plan.video_bitrate,
         output_height: height,
-        output_fps,
+        bitrate_capped: plan.target_bytes < ceiling_bytes(target_size_mb),
         min_mb: min_target_mb(metadata.duration),
         uses_cpu,
     })
@@ -1980,22 +2036,16 @@ fn compression_height_for_bitrate(video_bitrate: u64, av1: bool) -> u64 {
     }
 }
 
-fn compression_geometry(video_bitrate: u64, av1: bool, source_fps: f64) -> (u64, f64) {
+fn compression_height(video_bitrate: u64, av1: bool, source_fps: f64) -> u64 {
     let source_fps = source_fps.max(1.0);
     let rate_at_source_fps = (video_bitrate as f64 * (30.0 / source_fps).min(1.0)).round() as u64;
     let height_at_source_fps = compression_height_for_bitrate(rate_at_source_fps, av1);
-    if source_fps > 30.0 && height_at_source_fps < 720 {
-        let reduced_fps = (source_fps / 2.0).min(30.0);
-        (
-            compression_height_for_bitrate(video_bitrate, av1),
-            reduced_fps,
-        )
-    } else if !av1 && source_fps > 30.0 && height_at_source_fps >= 900 && rate_at_source_fps < 1_600_000 {
+    if !av1 && source_fps > 30.0 && height_at_source_fps >= 900 && rate_at_source_fps < 1_600_000 {
         // Fast 60 fps footage on a thin H.264 budget (about 2.4-3.2 Mbps): 720p measured cleaner than 900p
         // at the same file size (SSIM 0.893 vs 0.879 on a Rocket League capture), so spend the bits on fewer pixels.
-        (720, source_fps)
+        720
     } else {
-        (height_at_source_fps, source_fps)
+        height_at_source_fps
     }
 }
 
@@ -2258,7 +2308,7 @@ fn next_nvenc_qp(tried: &[(u64, u64)], target_bytes: u64) -> Option<u64> {
 fn compress_video(
     tools: &Tools,
     input: CompressionInput,
-    active: &Arc<Mutex<Option<u32>>>,
+    active: &Mutex<ExportJob>,
     emit: &dyn Fn(f64),
 ) -> Result<CompressionResult, String> {
     let mut m = match input.metadata {
@@ -2266,6 +2316,8 @@ fn compress_video(
         None => probe_media(&tools.ffprobe, &input.video_path)?,
     };
     check_compression_target(&m, input.target_size_mb)?;
+    let staged = StagedOutput::new(&input.output_path, &input.video_path)?;
+    let staged_path = staged.path.to_string_lossy();
     // A short test clip gets the same bitrate as the full encode: scale the size budget to the clip.
     let target_size_mb = input.target_size_mb;
     let mut target_bytes = ceiling_bytes(input.target_size_mb);
@@ -2291,10 +2343,8 @@ fn compress_video(
         &input.encoder_preference,
     );
     if encoder.name.starts_with("av1_") {
-        let (max_height, output_fps) =
-            compression_geometry(plan.video_bitrate, true, fps(&m.fps));
+        let max_height = compression_height(plan.video_bitrate, true, fps(&m.fps));
         plan.output_height = m.height.min(max_height);
-        plan.output_fps = output_fps;
     }
     let dir = tempfile::Builder::new()
         .prefix("SubarollCompress-")
@@ -2317,9 +2367,6 @@ fn compress_video(
     if plan.output_height < m.height {
         filters.push(format!("scale=-2:{}:flags=lanczos", plan.output_height))
     }
-    if plan.output_fps < fps(&m.fps) - 0.01 {
-        filters.push(format!("fps={}", fmt(plan.output_fps)))
-    }
     filters.push("format=yuv420p".into());
     let mut common = vec![
         "-hide_banner".into(),
@@ -2334,6 +2381,8 @@ fn compress_video(
         "0:v:0".into(),
         "-vf".into(),
         filters.join(","),
+        "-fps_mode".into(),
+        "passthrough".into(),
     ]);
     let common_base = common.clone();
     let mut final_args = if encoder.hardware {
@@ -2431,9 +2480,9 @@ fn compress_video(
         ]);
         run_progress(&tools.ffmpeg, &first, m.duration, base, 0.05, emit, active)?;
         args.extend(["-pass".into(), "2".into()]);
-        append_output(&mut args, &input.output_path);
+        append_output(&mut args, &staged_path);
         run_progress(&tools.ffmpeg, &args, m.duration, base + 0.05, 0.05, emit, active)?;
-        fs::metadata(&input.output_path).map(|f| f.len()).map_err(|e| e.to_string())
+        fs::metadata(&staged.path).map(|f| f.len()).map_err(|e| e.to_string())
     };
     // NVENC runs at constant QP, so its size is only known after encoding: every attempt goes to a
     // temp file and the best one under the target is copied to the real output at the end.
@@ -2441,7 +2490,7 @@ fn compress_video(
     let first_out = if nvenc {
         dir.path().join("attempt-0.mp4").to_string_lossy().into_owned()
     } else {
-        input.output_path.clone()
+        staged_path.to_string()
     };
     append_output(&mut final_args, &first_out);
     run_progress(
@@ -2496,16 +2545,16 @@ fn compress_video(
             .max_by_key(|a| a.1)
             .cloned();
         if let Some((qp, size, path)) = best {
-            fs::copy(&path, &input.output_path).map_err(|e| e.to_string())?;
+            fs::copy(&path, &staged.path).map_err(|e| e.to_string())?;
             encoder = compression_hardware_recipe_with_qp(&encoder_name, plan.video_bitrate, qp);
             bytes = size;
         } else {
             // Even the coarsest constant QP is over the ceiling (very small targets): switch to bitrate control.
             let mut args = common_base.clone();
             args.extend(nvenc_vbr_args(&encoder_name, plan.video_bitrate));
-            append_output(&mut args, &input.output_path);
+            append_output(&mut args, &staged_path);
             run_progress(&tools.ffmpeg, &args, m.duration, 0.8, 0.1, emit, active)?;
-            bytes = fs::metadata(&input.output_path).map_err(|e| e.to_string())?.len();
+            bytes = fs::metadata(&staged.path).map_err(|e| e.to_string())?.len();
             encoder = CompressionEncoder {
                 name: encoder_name,
                 args: Vec::new(),
@@ -2552,9 +2601,9 @@ fn compress_video(
                 (scaled * 2).to_string(),
             ]);
         }
-        append_output(&mut retry_args, &input.output_path);
+        append_output(&mut retry_args, &staged_path);
         run_progress(&tools.ffmpeg, &retry_args, m.duration, 0.9, 0.1, emit, active)?;
-        bytes = fs::metadata(&input.output_path).map_err(|e| e.to_string())?.len();
+        bytes = fs::metadata(&staged.path).map_err(|e| e.to_string())?.len();
         if encoder.hardware && bytes as f64 > limit {
             // Intel/AMD hit the same wall as NVIDIA at very low bitrates (Quick Sync failed at 0.19 Mbps in
             // testing): x264 two-pass is the encoder that can hold the size, so finish with it.
@@ -2576,12 +2625,12 @@ fn compress_video(
     }
     if bytes as f64 > limit {
         // Never leave an over-size file behind.
-        let _ = fs::remove_file(&input.output_path);
         return Err(format!(
             "Couldn't fit this video under {target_size_mb} MB. Choose a larger size."
         ));
     }
-    let metadata = probe_media(&tools.ffprobe, &input.output_path)?;
+    let metadata = probe_media(&tools.ffprobe, &staged_path)?;
+    staged.commit(&input.output_path, active)?;
     emit(1.0);
     Ok(CompressionResult {
         output: input.output_path,
@@ -2602,7 +2651,7 @@ pub async fn start_compression(
 ) -> Result<CompressionResult, String> {
     let job_guard = reserve_job(&state)?;
     let tools = tools_for(&state)?;
-    let active = state.active_pid.clone();
+    let active = state.export.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _job_guard = job_guard;
         let emit = |v: f64| {
@@ -2616,22 +2665,21 @@ pub async fn start_compression(
 
 #[tauri::command]
 pub fn cancel_export(state: State<AppState>) -> bool {
-    let pid = *state.active_pid.lock().unwrap();
-    if let Some(pid) = pid {
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
-        }
-        #[cfg(windows)]
-        {
-            let _ = background_command("taskkill")
-                .args(["/PID", &pid.to_string(), "/T", "/F"])
-                .status();
-        }
-        true
-    } else {
-        false
+    cancel_running_export(&state)
+}
+
+pub fn cancel_running_export(state: &AppState) -> bool {
+    let mut job = state.export.lock().unwrap();
+    if !job.running {
+        return false;
     }
+    if let Some(child) = job.child.as_mut() {
+        if child.try_wait().ok().flatten().is_none() && child.kill().is_err() {
+            return false;
+        }
+    }
+    job.cancelled = true;
+    true
 }
 
 #[tauri::command]
@@ -2664,6 +2712,137 @@ pub fn reveal_output(output_path: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_export_keeps_the_existing_output_and_removes_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("output.mp4");
+        let output = output.to_str().unwrap();
+        fs::write(output, b"prior export").unwrap();
+        let state = AppState::default();
+        let guard = reserve_job(&state).unwrap();
+        let staged = StagedOutput::new(output, "source.mp4").unwrap();
+        let staging_dir = staged.path.parent().unwrap().to_owned();
+        fs::write(&staged.path, b"partial export").unwrap();
+        assert!(cancel_running_export(&state));
+        assert_eq!(
+            staged.commit(output, &state.export).unwrap_err(),
+            EXPORT_CANCELLED
+        );
+        drop(staged);
+        drop(guard);
+        assert!(!staging_dir.exists());
+        assert_eq!(fs::read(output).unwrap(), b"prior export");
+        assert!(!cancel_running_export(&state));
+
+        let _next = reserve_job(&state).unwrap();
+        let staged = StagedOutput::new(output, "source.mp4").unwrap();
+        fs::write(&staged.path, b"finished export").unwrap();
+        staged.commit(output, &state.export).unwrap();
+        assert_eq!(fs::read(output).unwrap(), b"finished export");
+        assert!(StagedOutput::new(output, output).is_err());
+    }
+
+    #[test]
+    #[ignore = "uses FFmpeg to verify actual child process cancellation"]
+    fn real_cancel_reaps_ffmpeg_and_prevents_another_pass() {
+        let tools = find_tools(None).expect("FFmpeg with libass is required");
+        let state = AppState::default();
+        let _guard = reserve_job(&state).unwrap();
+        let args = [
+            "-hide_banner",
+            "-re",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=s=320x180:r=30",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            "-t",
+            "30",
+            "-f",
+            "null",
+            "-",
+        ]
+        .map(str::to_owned);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                run_progress(&tools.ffmpeg, &args, 30.0, 0.0, 1.0, &|_| {}, &state.export)
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while state.export.lock().unwrap().child.is_none() {
+                assert!(std::time::Instant::now() < deadline, "FFmpeg did not start");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(cancel_running_export(&state));
+            assert_eq!(worker.join().unwrap().unwrap_err(), EXPORT_CANCELLED);
+        });
+        assert!(state.export.lock().unwrap().child.is_none());
+        assert_eq!(
+            run_progress(&tools.ffmpeg, &args, 30.0, 0.0, 1.0, &|_| {}, &state.export).unwrap_err(),
+            EXPORT_CANCELLED
+        );
+    }
+
+    #[test]
+    #[ignore = "uses FFmpeg to exercise failing production exports"]
+    fn real_export_failures_remove_staging_and_keep_existing_output() {
+        let tools = find_tools(None).expect("FFmpeg with libass is required");
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir
+            .path()
+            .join("existing.mp4")
+            .to_string_lossy()
+            .into_owned();
+        let source = dir
+            .path()
+            .join("missing.mp4")
+            .to_string_lossy()
+            .into_owned();
+        let subtitle = dir.path().join("source.srt");
+        fs::write(&subtitle, "1\n00:00:00,000 --> 00:00:02,000\nTest\n").unwrap();
+        fs::write(&output, b"previous export").unwrap();
+        let active = Mutex::new(ExportJob::default());
+        let metadata = meta(2.0, 1_000_000);
+        let burn = burn_video(
+            &tools,
+            ExportInput {
+                video_path: source.clone(),
+                subtitle_path: subtitle.to_string_lossy().into_owned(),
+                output_path: output.clone(),
+                metadata: Some(metadata.clone()),
+                settings: SubtitleSettings {
+                    windows_encoder: "software".into(),
+                    ..Default::default()
+                },
+                clip_start: 0.0,
+                clip_duration: 0.0,
+            },
+            &active,
+            &|_| {},
+        );
+        assert!(burn.err().unwrap().contains("missing.mp4"));
+        let compress = compress_video(
+            &tools,
+            CompressionInput {
+                video_path: source,
+                output_path: output.clone(),
+                metadata: Some(metadata),
+                target_size_mb: 1.0,
+                codec_preference: "h264".into(),
+                encoder_preference: "software".into(),
+                clip_start: 0.0,
+                clip_duration: 0.0,
+            },
+            &active,
+            &|_| {},
+        );
+        assert!(compress.err().unwrap().contains("missing.mp4"));
+        assert_eq!(fs::read(output).unwrap(), b"previous export");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+        assert!(active.lock().unwrap().child.is_none());
+    }
 
     #[test]
     fn sidecar_subtitle_matching() {
@@ -2794,6 +2973,28 @@ mod tests {
         assert!(plan_compression(m, 0.0, false, "auto".into()).is_err());
     }
 
+    #[test]
+    fn authored_ass_positions_survive_shared_dialogue_styles() {
+        let source = r"[Script Info]
+PlayResX: 640
+PlayResY: 360
+[Events]
+Format: Layer, Start, End, Style, Text
+Dialogue: 0,0:00:00.00,0:00:01.00,Default,Regular dialogue
+Dialogue: 0,0:00:00.00,0:00:01.00,Default,{\an7\pos(95,130)}Positioned sign
+Dialogue: 0,0:00:00.00,0:00:01.00,Default,{\move(20,30,40,50)}Moving sign
+Dialogue: broken";
+        let settings = SubtitleSettings {
+            position_percent: 20.0,
+            scale_percent: 150.0,
+            ..Default::default()
+        };
+        let transformed = transform_ass(source, &settings, false, 16.0 / 9.0);
+        assert!(transformed.contains(r"{\an2\pos(320,110)}Regular dialogue"));
+        assert!(transformed.contains(r"Default,{\an7\pos(95,130)}Positioned sign"));
+        assert!(transformed.contains(r"Default,{\move(20,30,40,50)}Moving sign"));
+    }
+
     /// 1080p30 test clip with audio, built with the same ffmpeg the app uses.
     fn make_clip(tools: &Tools, dir: &Path, seconds: u32) -> PathBuf {
         let path = dir.join("source.mp4");
@@ -2811,6 +3012,352 @@ mod tests {
         path
     }
 
+    #[test]
+    #[ignore = "runs FFmpeg and libass against a generated video"]
+    fn real_preview_renders_with_and_without_subtitles() {
+        let tools = find_tools(None).expect("FFmpeg with libass is required");
+        let dir = tempfile::tempdir().unwrap();
+        let video = make_clip(&tools, dir.path(), 2);
+        let subtitle = dir.path().join("source.srt");
+        fs::write(&subtitle, "1\n00:00:00,000 --> 00:00:02,000\nPreview test\n").unwrap();
+        let mut input = PreviewInput {
+            video_path: video.to_string_lossy().into_owned(),
+            subtitle_path: None,
+            metadata: None,
+            settings: SubtitleSettings {
+                position_percent: 90.0,
+                scale_percent: 100.0,
+                ..Default::default()
+            },
+            time: 0.5,
+        };
+        let video_only = preview_video(&tools, input.clone()).unwrap();
+        assert!(video_only.frame.starts_with("data:image/png;base64,iVBOR"));
+        assert!(video_only.subtitle_error.is_none());
+        input.time = 1.5;
+        let seeked = preview_video(&tools, input.clone()).unwrap();
+        assert_ne!(seeked.frame, video_only.frame);
+
+        input.subtitle_path = Some(subtitle.to_string_lossy().into_owned());
+        let with_subtitles = preview_video(&tools, input.clone()).unwrap();
+        assert_ne!(with_subtitles.frame, seeked.frame);
+        assert!(with_subtitles.subtitle_error.is_none());
+
+        fs::remove_file(subtitle).unwrap();
+        let missing_subtitles = preview_video(&tools, input).unwrap();
+        assert_eq!(missing_subtitles.frame, seeked.frame);
+        assert!(missing_subtitles.subtitle_error.is_some());
+    }
+
+    #[cfg(target_os = "macos")]
+    fn bright_bounds(tools: &Tools, path: &str, time: f64, width: usize) -> Option<[usize; 4]> {
+        let pixels = run_output(
+            &tools.ffmpeg,
+            &[
+                "-v",
+                "error",
+                "-ss",
+                &fmt(time),
+                "-i",
+                path,
+                "-frames:v",
+                "1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "gray",
+                "pipe:1",
+            ]
+            .map(str::to_owned),
+        )
+        .unwrap();
+        assert!(
+            !pixels.is_empty(),
+            "no decoded pixels from {path} at {time}s"
+        );
+        let mut bounds = None;
+        for (i, value) in pixels.into_iter().enumerate() {
+            if value < 180 {
+                continue;
+            }
+            let [x, y] = [i % width, i / width];
+            let [left, top, right, bottom] = bounds.unwrap_or([x, y, x, y]);
+            bounds = Some([left.min(x), top.min(y), right.max(x), bottom.max(y)]);
+        }
+        bounds
+    }
+
+    #[cfg(target_os = "macos")]
+    fn frame_times(tools: &Tools, path: &str) -> Vec<String> {
+        let bytes = run_output(
+            &tools.ffprobe,
+            &[
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "frame=best_effort_timestamp_time",
+                "-of",
+                "json",
+                path,
+            ]
+            .map(str::to_owned),
+        )
+        .unwrap();
+        serde_json::from_slice::<Value>(&bytes).unwrap()["frames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|frame| {
+                frame["best_effort_timestamp_time"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires actual Apple VideoToolbox hardware and FFmpeg with libass"]
+    fn real_apple_and_cpu_export_matrix() {
+        let state = AppState::default();
+        let started = std::time::Instant::now();
+        let tools = tools_for(&state).unwrap();
+        println!(
+            "FFmpeg discovery once at startup: {:.0?}",
+            started.elapsed()
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("burn-source.mp4");
+        let source = source.to_str().unwrap();
+        run_output(
+            &tools.ffmpeg,
+            &[
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=0x202020:s=640x360:r=30000/1001:d=4",
+                "-vf",
+                "noise=alls=12:allf=t+u:all_seed=123",
+                "-c:v",
+                "libx264",
+                "-crf",
+                "18",
+                "-pix_fmt",
+                "yuv420p",
+                source,
+            ]
+            .map(str::to_owned),
+        )
+        .unwrap();
+        let input_times = frame_times(&tools, source);
+        let input_meta = probe_media(&tools.ffprobe, source).unwrap();
+        let subtitle = dir.path().join("source.srt");
+        fs::write(
+            &subtitle,
+            "1\n00:00:00,000 --> 00:00:01,500\nPreview test\nSecond line\n",
+        )
+        .unwrap();
+
+        let preview_path = dir.path().join("preview.png");
+        let mut prior: Option<[usize; 4]> = None;
+        for (position, size, delay, quality) in
+            [(20.0, 75.0, 0.55, 65.0), (85.0, 150.0, -0.25, 85.0)]
+        {
+            let mut input = PreviewInput {
+                video_path: source.into(),
+                subtitle_path: Some(subtitle.to_string_lossy().into_owned()),
+                metadata: Some(input_meta.clone()),
+                settings: SubtitleSettings {
+                    delay_seconds: delay,
+                    position_percent: position,
+                    scale_percent: size,
+                    quality,
+                    ..Default::default()
+                },
+                time: 0.4,
+            };
+            let times = [0.4, 0.72, 1.35, 1.95, 2.15];
+            let mut preview_bounds = Vec::new();
+            for t in times {
+                input.time = t;
+                let started = std::time::Instant::now();
+                let result = preview_video(&tools_for(&state).unwrap(), input.clone()).unwrap();
+                println!(
+                    "Preview {}% position, {}% size, seek to {t}s: {:.0?}",
+                    position,
+                    size,
+                    started.elapsed()
+                );
+                assert!(result.subtitle_error.is_none());
+                fs::write(
+                    &preview_path,
+                    BASE64
+                        .decode(result.frame.split_once(',').unwrap().1)
+                        .unwrap(),
+                )
+                .unwrap();
+                preview_bounds.push(bright_bounds(
+                    &tools,
+                    preview_path.to_str().unwrap(),
+                    0.0,
+                    640,
+                ));
+            }
+            assert_eq!(
+                preview_bounds
+                    .iter()
+                    .map(Option::is_some)
+                    .collect::<Vec<_>>(),
+                if delay > 0.0 {
+                    vec![false, true, true, true, false]
+                } else {
+                    vec![true, true, false, false, false]
+                },
+                "subtitle timing at delay {delay}"
+            );
+            let bounds = preview_bounds[1].unwrap();
+            if let Some([left, top, right, bottom]) = prior {
+                assert!(bounds[1] > bottom, "85% position should be below 20%");
+                assert!(
+                    bounds[2] - bounds[0] > right - left && bounds[3] - bounds[1] > bottom - top,
+                    "150% size should be larger than 75%"
+                );
+            }
+            prior = Some(bounds);
+
+            for (choice, expected, quality_flag, quality_value) in [
+                ("videotoolbox", "hevc_videotoolbox", "-q:v", quality as i64),
+                (
+                    "software",
+                    "libx264",
+                    "-crf",
+                    (41.0_f64 - quality * 0.3).round() as i64,
+                ),
+            ] {
+                let settings = SubtitleSettings {
+                    windows_encoder: choice.into(),
+                    ..input.settings.clone()
+                };
+                let (_, args, _) = encoder_args(&tools.ffmpeg, &input_meta, &settings);
+                assert!(args
+                    .windows(2)
+                    .any(|pair| pair[0] == quality_flag && pair[1] == quality_value.to_string()));
+                let out = dir.path().join(format!("burn-{choice}-{quality}.mp4"));
+                let out = out.to_str().unwrap();
+                let started = std::time::Instant::now();
+                let job = ExportInput {
+                    video_path: source.into(),
+                    subtitle_path: input.subtitle_path.clone().unwrap(),
+                    output_path: out.into(),
+                    metadata: Some(input_meta.clone()),
+                    settings,
+                    clip_start: 0.0,
+                    clip_duration: 0.0,
+                };
+                let result =
+                    burn_video(&tools, job.clone(), &Mutex::new(ExportJob::default()), &|_| {}).unwrap();
+                assert_eq!(
+                    result.encoder, expected,
+                    "selected hardware may not silently fall back"
+                );
+                assert_eq!(result.quality, quality as i64);
+                assert_eq!(
+                    frame_times(&tools, out),
+                    input_times,
+                    "burn changed frame times"
+                );
+                for (t, preview) in times.iter().zip(&preview_bounds) {
+                    let burn = bright_bounds(&tools, out, *t, 640);
+                    match (preview, burn) {
+                        (Some(a), Some(b)) => assert!(
+                            a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 2),
+                            "{choice} at {t}s: preview {a:?}, burn {b:?}"
+                        ),
+                        _ => assert_eq!(*preview, burn, "{choice} at {t}s"),
+                    }
+                }
+                if delay > 0.0 {
+                    let clip = dir.path().join(format!("clip-{choice}.mp4"));
+                    let clip = clip.to_str().unwrap();
+                    burn_video(
+                        &tools,
+                        ExportInput {
+                            output_path: clip.into(),
+                            clip_start: 1.0,
+                            clip_duration: 2.0,
+                            ..job
+                        },
+                        &Mutex::new(ExportJob::default()),
+                        &|_| {},
+                    )
+                    .unwrap();
+                    assert_eq!(bright_bounds(&tools, clip, 0.35, 640), preview_bounds[2]);
+                    assert!(bright_bounds(&tools, clip, 1.15, 640).is_none());
+                }
+                let meta = probe_media(&tools.ffprobe, out).unwrap();
+                println!("Burn {expected} CQ {quality}: {:.0?} incl. verification, {} bps, {} bytes, {} frames",
+                    started.elapsed(), meta.bit_rate, fs::metadata(out).unwrap().len(), input_times.len());
+            }
+        }
+
+        let source = make_clip(&tools, dir.path(), 8);
+        let source = source.to_str().unwrap();
+        let source_meta = probe_media(&tools.ffprobe, source).unwrap();
+        let source_times = frame_times(&tools, source);
+        println!(
+            "Compression source: {} bytes, {} bps, {}x{}, {} fps, {:.2}s",
+            fs::metadata(source).unwrap().len(),
+            source_meta.bit_rate,
+            source_meta.width,
+            source_meta.height,
+            fps(&source_meta.fps),
+            source_meta.duration
+        );
+        for (choice, expected) in [
+            ("videotoolbox", "h264_videotoolbox"),
+            ("software", "libx264"),
+        ] {
+            let out = dir.path().join(format!("compress-{choice}.mp4"));
+            let out = out.to_str().unwrap();
+            let started = std::time::Instant::now();
+            let result = compress_video(
+                &tools,
+                CompressionInput {
+                    video_path: source.into(),
+                    output_path: out.into(),
+                    metadata: Some(source_meta.clone()),
+                    target_size_mb: 1.0,
+                    codec_preference: "auto".into(),
+                    encoder_preference: choice.into(),
+                    clip_start: 0.0,
+                    clip_duration: 0.0,
+                },
+                &Mutex::new(ExportJob::default()),
+                &|_| {},
+            )
+            .unwrap();
+            let elapsed = started.elapsed();
+            assert_eq!(
+                result.encoder, expected,
+                "Apple test must really use hardware"
+            );
+            assert!(result.bytes <= ceiling_bytes(1.0));
+            assert_eq!(frame_times(&tools, out), source_times);
+            assert!(!result.metadata.audio_streams.is_empty());
+            let estimate =
+                plan_compression(source_meta.clone(), 1.0, false, choice.into()).unwrap();
+            assert_eq!(result.metadata.height, estimate.output_height);
+            println!("Compress {expected}: {:.0?}, {} bytes, {} bps ({} planned), {}x{}, {} fps, {} frames",
+                elapsed, result.bytes, result.metadata.bit_rate, estimate.video_bitrate,
+                result.metadata.width, result.metadata.height, fps(&result.metadata.fps), source_times.len());
+        }
+    }
+
     fn run_compression(
         tools: &Tools,
         source: &Path,
@@ -2818,7 +3365,7 @@ mod tests {
         mb: f64,
         clip: (f64, f64),
     ) -> Result<CompressionResult, String> {
-        let active = Arc::new(Mutex::new(None));
+        let active = Mutex::new(ExportJob::default());
         let last = Mutex::new(0.0_f64);
         let emit = |v: f64| *last.lock().unwrap() = v;
         let result = compress_video(
@@ -2839,7 +3386,7 @@ mod tests {
         if result.is_ok() {
             assert!(*last.lock().unwrap() >= 0.99, "progress never reached 100%");
         }
-        assert!(active.lock().unwrap().is_none(), "ffmpeg process was left registered");
+        assert!(active.lock().unwrap().child.is_none(), "ffmpeg process was left registered");
         result
     }
 
@@ -2913,7 +3460,7 @@ mod tests {
         let r = run_compression(&tools, &source, &out, target_mb, (0.0, 0.0)).expect("compression failed");
         let secs = started.elapsed().as_secs_f64();
         println!("SOURCE   {}x{} @ {} fps, {:.1}s, video {:.2} Mbps, file {:.1} MB", src.width, src.height, src.fps, src.duration, src.bit_rate as f64 / 1e6, src_bytes as f64 / 1_048_576.0);
-        println!("TARGET   {target_mb} MB ({} bytes ceiling); plan video {:.2} Mbps + audio {} kbps, {}p @ {:.1} fps", ceiling_bytes(target_mb), plan.video_bitrate as f64 / 1e6, plan.audio_bitrate / 1000, plan.output_height, plan.output_fps);
+        println!("TARGET   {target_mb} MB ({} bytes ceiling); plan video {:.2} Mbps + audio {} kbps, {}p @ {:.1} fps", ceiling_bytes(target_mb), plan.video_bitrate as f64 / 1e6, plan.audio_bitrate / 1000, plan.output_height, fps(&src.fps));
         println!("ENCODER  {} (hardware: {}){}", r.encoder, r.hardware, r.nvenc_qp.map(|q| format!(", NVENC QP {q}")).unwrap_or_default());
         println!("OUTPUT   {}x{} @ {} fps, {:.1}s, video {:.2} Mbps, file {:.1} MB = {:.1}% of source", r.metadata.width, r.metadata.height, r.metadata.fps, r.metadata.duration, r.metadata.bit_rate as f64 / 1e6, r.bytes as f64 / 1_048_576.0, r.bytes as f64 * 100.0 / src_bytes as f64);
         println!("TIME     {secs:.0}s ({:.1}x realtime)", src.duration / secs);
@@ -3021,9 +3568,9 @@ mod tests {
         assert_eq!(compression_height_for_bitrate(2_287_919, false), 1080);
         assert_eq!(compression_height_for_bitrate(1_100_000, false), 720);
         assert_eq!(compression_height_for_bitrate(1_100_000, true), 900);
-        assert_eq!(compression_geometry(2_287_919, false, 30.0), (1080, 30.0));
-        assert_eq!(compression_geometry(2_287_919, false, 60.0), (720, 60.0));
-        assert_eq!(compression_geometry(1_100_000, false, 60.0), (720, 30.0));
+        assert_eq!(compression_height(2_287_919, false, 30.0), 1080);
+        assert_eq!(compression_height(2_287_919, false, 60.0), 720);
+        assert_eq!(compression_height(1_100_000, false, 60.0), 540);
         let source_height = 480;
         assert_eq!(
             source_height.min(compression_height_for_bitrate(8_000_000, true)),
@@ -3034,16 +3581,16 @@ mod tests {
     #[test]
     fn thin_60fps_budgets_use_720p_but_nothing_else_changes() {
         // 60 fps, 2.4-3.2 Mbps: 720p60 instead of 900p60 (measured better at the same size).
-        assert_eq!(compression_geometry(3_040_000, false, 60.0), (720, 60.0));
-        assert_eq!(compression_geometry(2_500_000, false, 60.0), (720, 60.0));
+        assert_eq!(compression_height(3_040_000, false, 60.0), 720);
+        assert_eq!(compression_height(2_500_000, false, 60.0), 720);
         // More budget still earns 900p / 1080p, and the frame rate is never traded for this.
-        assert_eq!(compression_geometry(3_400_000, false, 60.0), (900, 60.0));
-        assert_eq!(compression_geometry(4_200_000, false, 60.0), (1080, 60.0));
+        assert_eq!(compression_height(3_400_000, false, 60.0), 900);
+        assert_eq!(compression_height(4_200_000, false, 60.0), 1080);
         // 30 fps is untouched: a source that fits 1080p keeps it.
-        assert_eq!(compression_geometry(3_040_000, false, 30.0), (1080, 30.0));
-        assert_eq!(compression_geometry(2_287_919, false, 30.0), (1080, 30.0));
+        assert_eq!(compression_height(3_040_000, false, 30.0), 1080);
+        assert_eq!(compression_height(2_287_919, false, 30.0), 1080);
         // AV1 is more efficient and was not measured, so it keeps its own tiers.
-        assert_eq!(compression_geometry(3_040_000, true, 60.0), (1080, 60.0));
+        assert_eq!(compression_height(3_040_000, true, 60.0), 1080);
     }
 
     #[test]
@@ -3215,7 +3762,7 @@ mod tests {
         let output = prepared._dir.path().join("rust-preview.png");
         let filter = format!(
             "format=rgba,{}",
-            subtitle_filter(&prepared, 0.0, Some(3.5), true, 0.0)
+            subtitle_filter(&prepared, 0.0, 3.5)
         );
         run_output(
             &tools.ffmpeg,
@@ -3279,7 +3826,7 @@ mod tests {
             }
             .into(),
         );
-        filters.push(subtitle_filter(&prepared, 0.0, None, false, 0.0));
+        filters.push(subtitle_filter(&prepared, 0.0, 0.0));
         filters.push(
             if ten {
                 "format=p010le"

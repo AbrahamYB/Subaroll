@@ -2,8 +2,9 @@ const api = window.subaroll;
 document.documentElement.classList.toggle('platform-windows', /Windows/.test(navigator.userAgent));
 const state = {
   videoPath: '', subtitlePath: '', outputPath: '', metadata: null,
-  mode: 'subtitles', exporting: false, previewTimer: null, previewRequest: 0, previewBusy: false, previewPending: false, videoEncoder: '', platform: '', availableVideoEncoders: [], availableAv1Encoders: [], renderedPreviewSettings: null, renderedPreviewLayout: null, subtitleTiming: null, subtitleWarning: '',
-  availableUpdate: null, updateBusy: false, planError: '', autoVideoEncoder10bit: '',
+  mode: 'subtitles', exporting: false, previewTimer: null, previewRequest: 0, previewBusy: false, previewPending: null, previewDirty: false, previewFrameUrl: null, videoEncoder: '', platform: '', availableVideoEncoders: [], availableAv1Encoders: [], subtitleTiming: null, subtitleWarning: '',
+  availableUpdate: null, updateBusy: false, autoVideoEncoder10bit: '',
+  appleBurnAvailable: false, toolsReady: false,
 };
 
 const $ = id => document.getElementById(id);
@@ -15,7 +16,7 @@ const elements = {
   quality: $('quality'), qualityValue: $('qualityValue'), qualityHint: $('qualityHint'),
   windowsEncoderCard: $('windowsEncoderCard'), windowsEncoder: $('windowsEncoder'),
   encoderAvailability: $('encoderAvailability'), encoderHint: $('encoderHint'),
-  previewStage: $('previewStage'), previewFrame: $('previewFrame'), previewSubtitles: $('previewSubtitles'), previewSpinner: $('previewSpinner'),
+  previewStage: $('previewStage'), previewFrame: $('previewFrame'), previewSpinner: $('previewSpinner'),
   exportButton: $('exportButton'), testButton: $('testButton'), cancelButton: $('cancelButton'), progressWrap: $('progressWrap'),
   progressValue: $('progressValue'), progressBar: $('progressBar'), status: $('status'),
   subtitleMode: $('subtitleMode'), compressMode: $('compressMode'), compressionOptions: $('compressionOptions'),
@@ -28,7 +29,7 @@ const elements = {
 
 // Custom slider: pill track, dotted fill, capsule thumb. The real <input type=range> stays on top
 // (invisible) so the rest of the app still reads/writes its value. While dragging, values near a
-// landmark softly lock; after you leave one it only re-arms once you reverse toward it.
+// landmark softly lock. The highlight follows the current value for every input method.
 function enhanceSlider(box) {
   const input = box.querySelector('input[type=range]');
   const min = Number(input.min), max = Number(input.max), span = max - min;
@@ -55,13 +56,13 @@ function enhanceSlider(box) {
   const ZONE_PX = 9;
   let dragging = false;
   const draw = () => {
-    const p = pct(Number(input.value));
+    const value = Number(input.value);
+    const p = pct(value);
     fill.style.width = at(p);
     thumb.style.left = `calc(${p}% - ${(0.22 * p).toFixed(2)}px)`;
-    // Sitting on a landmark (dragged there, typed, loaded from settings, or default) always looks locked.
-    const value = Number(input.value);
     const hit = snap.find(point => Math.abs(value - point) < 1e-6);
-    setLocked(hit === undefined ? null : hit);
+    ns.classList.toggle('lock', hit !== undefined);
+    ticks.forEach((tick, i) => tick.classList.toggle('hit', Number(marks[i][0]) === hit));
   };
   // Magnetic detent: while dragging, the pointer range [point-Z, point+Z] maps onto the point itself and
   // everything outside maps linearly back to the ends. The mapping is continuous, so the thumb never
@@ -86,11 +87,6 @@ function enhanceSlider(box) {
     }
     return max;
   };
-  const setLocked = point => {
-    ns.classList.toggle('lock', point !== null);
-    thumb.classList.toggle('locked', point !== null);
-    ticks.forEach((tick, i) => tick.classList.toggle('hit', point !== null && Number(marks[i]?.[0]) === point));
-  };
   input.addEventListener('input', () => {
     if (!dragging || !snap.length) { draw(); return; }
     const value = remap(Number(input.value));
@@ -98,15 +94,19 @@ function enhanceSlider(box) {
     draw();
   });
   input.addEventListener('pointerdown', () => { dragging = true; ns.classList.add('drag'); });
-  const release = () => { dragging = false; ns.classList.remove('drag'); };
+  input.addEventListener('change', draw);
+  const release = () => {
+    if (!dragging) return;
+    dragging = false;
+    ns.classList.remove('drag');
+    draw();
+  };
   window.addEventListener('pointerup', release);
   window.addEventListener('pointercancel', release);
   input.refreshSlider = draw;
   draw();
   return caption;
 }
-const sliderCaptions = [...document.querySelectorAll('.slider')].map(enhanceSlider);
-function refreshSliders() { document.querySelectorAll('.slider input[type=range]').forEach(input => input.refreshSlider()); }
 // Landmark labels that would overlap a neighbour (narrow window) are hidden rather than squashed.
 function declutterCaptions() {
   for (const caption of sliderCaptions) {
@@ -203,6 +203,7 @@ function autoEncoderLabel() {
     h264_nvenc: 'NVIDIA NVENC (H.264)', hevc_nvenc: 'NVIDIA NVENC (HEVC)',
     h264_amf: 'AMD AMF (H.264)', hevc_amf: 'AMD AMF (HEVC)',
     h264_qsv: 'Intel Quick Sync (H.264)', hevc_qsv: 'Intel Quick Sync (HEVC)',
+    hevc_videotoolbox: 'Apple VideoToolbox (HEVC)',
     libx264: 'CPU (H.264)', libx265: 'CPU (HEVC)',
   };
   return labels[encoder] || '';
@@ -222,6 +223,7 @@ function syncEncoderChips() {
   });
 }
 document.querySelectorAll('#encoderChips .chip').forEach(chip => chip.addEventListener('click', () => {
+  if (chip.disabled) return;
   elements.windowsEncoder.value = chip.dataset.value;
   elements.windowsEncoder.dispatchEvent(new Event('change', { bubbles: true }));
 }));
@@ -240,6 +242,7 @@ document.querySelectorAll('#codecChips .chip').forEach(chip => chip.addEventList
   elements.compressionCodec.dispatchEvent(new Event('change', { bubbles: true }));
 }));
 function setStatus(message, type = '') {
+  elements.status.onclick = null;
   elements.status.textContent = message;
   elements.status.title = message;
   elements.status.className = `status ${type}`;
@@ -293,11 +296,10 @@ const stageCol = $('stageCol'), dock = $('dock');
 function fitWindowToContent() { declutterCaptions(); }
 
 function refreshReady() {
-  const hasRequired = state.mode === 'compress'
-    ? state.videoPath && state.outputPath && state.metadata && Number(elements.targetSize.value) > 0 && !state.planError
-    : state.videoPath && state.subtitlePath && state.outputPath && state.metadata;
+  const hasRequired = state.videoPath && state.outputPath && state.metadata &&
+    (state.mode === 'compress' || state.subtitlePath);
   elements.exportButton.disabled = state.exporting || !hasRequired;
-  elements.testButton.disabled = state.exporting || !(state.videoPath && state.metadata && (state.mode === 'compress' ? !state.planError : state.subtitlePath));
+  elements.testButton.disabled = state.exporting || !hasRequired;
 }
 function subtitleFilenameToken() {
   const position = Math.max(0, Math.min(100, Number(elements.position.value))) / 100;
@@ -317,6 +319,7 @@ function updateAutomaticOutput() { state.outputPath = suggestOutput(); }
 
 function setMode(mode) {
   if (state.exporting) return;
+  const previousMode = state.mode;
   state.mode = mode === 'compress' ? 'compress' : 'subtitles';
   const compressing = state.mode === 'compress';
   elements.subtitleMode.classList.toggle('active', !compressing);
@@ -327,26 +330,36 @@ function setMode(mode) {
   elements.subtitleOnly.forEach(element => element.toggleAttribute('inert', compressing));
   elements.previewNote.textContent = compressing
     ? 'Compression keeps the original aspect ratio and chooses bitrate and resolution for the target size.'
-    : 'Position and size update instantly. The subtitle layer is rendered by libass.';
+    : 'Libass renders the preview with the current subtitle delay, position, and size.';
   elements.exportButton.textContent = compressing ? 'Compress video' : 'Burn subtitles';
   elements.modeEyebrow.textContent = compressing ? 'TARGET-SIZE COMPRESSION' : 'LIBASS BURN-IN';
   elements.modeTitle.textContent = compressing ? 'Compress video' : 'Burn subtitles';
   updateAutomaticOutput();
   refreshEncoderAvailability();
+  updateEstimate();
   setStatus('');
+  if (state.mode !== previousMode) {
+    schedulePreview();
+  }
   refreshReady();
   fitWindowToContent();
 }
 
-// Windows: GPU/CPU choice in both modes. macOS: Apple VideoToolbox or CPU for Compress; Burn always uses VideoToolbox.
 function refreshEncoderAvailability() {
   const windows = state.platform === 'windows';
   const mac = state.platform === 'macos';
-  const burnOnMac = mac && state.mode === 'subtitles';
-  const usable = (windows || mac) && !burnOnMac;
+  const usable = state.toolsReady && (windows || mac);
   elements.windowsEncoder.disabled = !usable;
   elements.windowsEncoderCard.classList.toggle('is-unavailable', !usable);
-  elements.windowsEncoderCard.title = burnOnMac ? 'Burn mode uses Apple VideoToolbox. Choose an encoder in Compress mode.' : windows || mac ? '' : 'Encoder choice is available on Windows and macOS.';
+  const available = new Set(state.availableVideoEncoders);
+  if (mac && state.mode === 'subtitles') {
+    available.delete('videotoolbox');
+    if (state.appleBurnAvailable) available.add('videotoolbox');
+  }
+  for (const option of elements.windowsEncoder.options) {
+    option.disabled = !['auto', 'software'].includes(option.value) && !available.has(option.value);
+  }
+  if (usable && elements.windowsEncoder.selectedOptions[0]?.disabled) elements.windowsEncoder.value = 'auto';
   syncEncoderChips();
 }
 
@@ -357,12 +370,13 @@ async function checkTools() {
   const mac = state.platform === 'macos';
   document.documentElement.classList.toggle('platform-windows', windows);
   document.documentElement.classList.toggle('platform-macos', mac);
-  refreshEncoderAvailability();
+  state.toolsReady = result.ok;
   elements.encoderAvailability.textContent = windows || mac ? 'Detecting…' : 'Unavailable';
   if (result.ok) {
     state.videoEncoder = result.videoEncoder;
     state.autoVideoEncoder10bit = result.autoVideoEncoder10bit;
     state.availableVideoEncoders = result.availableVideoEncoders || [];
+    state.appleBurnAvailable = Boolean(result.appleBurnAvailable);
     state.availableAv1Encoders = result.availableAv1Encoders || [];
     const av1Option = elements.compressionCodec.querySelector('option[value="av1"]');
     av1Option.disabled = state.availableAv1Encoders.length === 0;
@@ -371,17 +385,11 @@ async function checkTools() {
     if (savedCodec && !localStorage.getItem(COMPRESSION_CODEC_KEY)) localStorage.setItem(COMPRESSION_CODEC_KEY, savedCodec);
     if (elements.compressionCodec.selectedOptions[0]?.disabled) elements.compressionCodec.value = 'auto';
     const av1Labels = { nvenc: 'NVIDIA NVENC', qsv: 'Intel Quick Sync', amf: 'AMD AMF' };
-    updateEstimate();
     elements.compressionCodecHint.textContent = state.availableAv1Encoders.length
       ? `AV1 ready on ${state.availableAv1Encoders.map(value => av1Labels[value]).join(' + ')}.`
       : 'No hardware AV1 found. Auto uses H.264.';
     document.querySelector('#codecChips [data-value=av1]').title = elements.compressionCodecHint.textContent;
     if (windows || mac) {
-      const available = new Set(state.availableVideoEncoders);
-      for (const option of elements.windowsEncoder.options) {
-        if (!['auto', 'software'].includes(option.value)) option.disabled = !available.has(option.value);
-      }
-      if (elements.windowsEncoder.selectedOptions[0]?.disabled) elements.windowsEncoder.value = 'auto';
       const labels = { nvenc: 'NVIDIA', amf: 'AMD', qsv: 'Intel', videotoolbox: 'Apple' };
       elements.encoderAvailability.textContent = state.availableVideoEncoders.length
         ? state.availableVideoEncoders.map(value => labels[value]).join(' + ') + ' detected'
@@ -392,21 +400,37 @@ async function checkTools() {
     elements.encoderAvailability.textContent = 'Unavailable';
     setStatus('FFmpeg with libass is required.', 'error');
   }
-  syncEncoderChips();
+  refreshEncoderAvailability();
+  updateEstimate();
 }
 
 async function setVideo(videoPath) {
   if (!videoPath) return;
   clearTimeout(state.previewTimer);
   state.previewRequest += 1;
-  state.previewPending = false;
+  state.previewPending = null;
+  elements.previewStage.classList.remove('has-image');
+  releasePreviewFrame();
+  state.previewDirty = false;
+  elements.previewSpinner.hidden = true;
+  elements.seek.disabled = true;
   state.videoPath = videoPath;
+  state.metadata = null;
+  refreshReady();
+  elements.estFps.textContent = '—';
+  updateEstimate();
   elements.videoName.textContent = basename(videoPath);
   setStatus('Reading video details…');
   try {
-    state.metadata = await api.probe(videoPath);
+    const metadata = await api.probe(videoPath);
+    if (state.videoPath !== videoPath) return;
+    state.metadata = metadata;
+    const [frames, seconds = 1] = String(metadata.fps ?? '').split('/').map(Number);
+    const sourceFps = frames / seconds;
+    if (Number.isFinite(sourceFps) && sourceFps > 0) {
+      elements.estFps.textContent = `${Number(sourceFps.toFixed(3))} fps`;
+    }
     const canvas = previewCanvas(state.metadata);
-    elements.previewStage.style.setProperty('--preview-ratio', canvas.width / canvas.height);
     elements.seek.max = String(state.metadata.duration || 0);
     elements.seek.value = String(Math.min(30, Math.max(0, (state.metadata.duration || 0) * .08)));
     elements.seek.disabled = !state.metadata.duration;
@@ -425,9 +449,10 @@ async function setVideo(videoPath) {
     if (state.subtitleWarning) setStatus(state.subtitleWarning, 'error');
     schedulePreview();
   } catch (error) {
+    if (state.videoPath !== videoPath) return;
     state.metadata = null;
     updateEstimate();
-    setStatus(error.message, 'error');
+    setStatus(String(error), 'error');
   }
   if (state.platform === 'windows') encoderPresetDescription();
   refreshReady();
@@ -435,7 +460,7 @@ async function setVideo(videoPath) {
   // Auto-pick a matching subtitle, but never replace one the user chose by hand.
   if (state.metadata && (!state.subtitlePath || state.subtitleAuto)) {
     const found = await api.findSubtitle(videoPath).catch(() => '');
-    if (found && state.videoPath === videoPath) {
+    if (found && state.videoPath === videoPath && (!state.subtitlePath || state.subtitleAuto)) {
       await setSubtitle(found, true);
       if (!state.subtitleWarning) setStatus(`Matched subtitles: ${basename(found)}`);
     }
@@ -454,97 +479,104 @@ function updateSubtitleWarning() {
 async function setSubtitle(subtitlePath, auto = false) {
   if (!subtitlePath) return;
   state.subtitleAuto = auto;
-  clearTimeout(state.previewTimer);
-  state.previewRequest += 1;
-  state.previewPending = false;
+  if (state.mode === 'subtitles') {
+    clearTimeout(state.previewTimer);
+    state.previewRequest += 1;
+    state.previewPending = null;
+  }
   state.subtitlePath = subtitlePath;
   elements.subtitleName.textContent = basename(subtitlePath);
-  try { state.subtitleTiming = await api.inspectSubtitle(subtitlePath); } catch (_) { state.subtitleTiming = null; }
+  const timing = await api.inspectSubtitle(subtitlePath).catch(() => null);
+  if (state.subtitlePath !== subtitlePath) return;
+  state.subtitleTiming = timing;
   updateSubtitleWarning();
   if (!state.subtitleWarning) setStatus(/\.ass$/i.test(subtitlePath) ? 'ASS styling will be preserved; only size and position are adjusted.' : 'Crunchyroll Trebuchet preset will be applied to this plain-text subtitle file.');
-  schedulePreview();
+  if (state.mode === 'subtitles') schedulePreview();
   refreshReady();
   fitWindowToContent();
 }
 
-async function renderPreview() {
-  if (!(state.videoPath && state.subtitlePath && state.metadata) || state.exporting) return;
+function releasePreviewFrame() {
+  elements.previewFrame.removeAttribute('src');
+  if (state.previewFrameUrl) URL.revokeObjectURL(state.previewFrameUrl);
+  state.previewFrameUrl = null;
+}
+
+function previewFrameUrl(frame) {
+  const contents = atob(frame.slice(frame.indexOf(',') + 1));
+  const bytes = Uint8Array.from(contents, char => char.charCodeAt(0));
+  return URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
+}
+
+async function renderPreview(reportStatus) {
+  if (!(state.videoPath && state.metadata) || state.exporting) return;
   if (state.previewBusy) {
-    state.previewPending = true;
+    state.previewPending = () => schedulePreview(reportStatus);
     return;
   }
   state.previewBusy = true;
-  state.previewPending = false;
+  state.previewPending = null;
   const request = ++state.previewRequest;
   const renderedSettings = settings();
+  const subtitlePath = state.mode === 'subtitles' ? state.subtitlePath || null : null;
   elements.previewSpinner.hidden = false;
   try {
     const result = await api.renderPreview({
-      videoPath: state.videoPath, subtitlePath: state.subtitlePath, metadata: state.metadata,
+      videoPath: state.videoPath, subtitlePath, metadata: state.metadata,
       settings: renderedSettings, time: Number(elements.seek.value),
     });
     if (request !== state.previewRequest) return;
-    elements.previewFrame.onload = () => { elements.previewSpinner.hidden = true; elements.previewStage.classList.add('has-image'); };
-    elements.previewFrame.onerror = () => {
-      if (request !== state.previewRequest) return;
-      elements.previewSpinner.hidden = true;
-      elements.previewStage.classList.remove('has-image');
-      setStatus('The rendered preview image could not be displayed.', 'error');
-    };
-    state.renderedPreviewSettings = renderedSettings;
-    state.renderedPreviewLayout = result.layout;
-    elements.previewSubtitles.onload = () => {
-      if (request !== state.previewRequest) return;
-      elements.previewSubtitles.style.visibility = 'visible';
-      applyLiveSubtitleTransform();
-    };
-    elements.previewFrame.src = result.frame;
-    elements.previewSubtitles.src = result.subtitles;
-    elements.previewSubtitles.style.transform = 'none';
-    if (state.subtitleWarning) setStatus(state.subtitleWarning, 'error');
-    else setStatus(result.fontCount ? `Preview ready • ${result.fontCount} nearby font file${result.fontCount === 1 ? '' : 's'} loaded.` : 'Preview ready.');
+    const url = previewFrameUrl(result.frame);
+    result.frame = null;
+    releasePreviewFrame();
+    state.previewFrameUrl = url;
+    elements.previewFrame.src = url;
+    await elements.previewFrame.decode();
+    if (request !== state.previewRequest) return;
+    const { naturalWidth, naturalHeight } = elements.previewFrame;
+    elements.previewStage.style.setProperty('--preview-ratio', naturalWidth / naturalHeight);
+    elements.previewStage.classList.add('has-image');
+    if (!reportStatus) return;
+    if (result.subtitleError) setStatus(`Subtitle preview unavailable: ${result.subtitleError}`, 'error');
+    else if (subtitlePath && state.subtitleWarning) setStatus(state.subtitleWarning, 'error');
+    else if (!elements.status.classList.contains('success')) {
+      const count = result.fontCount;
+      setStatus(count ? `Preview ready • ${count} nearby font file${count === 1 ? '' : 's'} loaded.` : 'Preview ready.');
+    }
   } catch (error) {
     if (request !== state.previewRequest) return;
-    elements.previewSpinner.hidden = true;
-    elements.previewSubtitles.style.visibility = 'visible';
-    setStatus(error.message, 'error');
-  } finally {
-    state.previewBusy = false;
-    if (state.previewPending && !state.exporting) {
-      state.previewPending = false;
-      schedulePreview(0);
+    if (!elements.previewFrame.naturalWidth) {
+      releasePreviewFrame();
+      elements.previewStage.classList.remove('has-image');
     }
+    if (reportStatus) setStatus(String(error), 'error');
+  } finally {
+    if (request === state.previewRequest) {
+      elements.previewSpinner.hidden = true;
+      state.previewDirty = false;
+    }
+    state.previewBusy = false;
+    const pending = state.previewPending;
+    state.previewPending = null;
+    if (pending && !state.exporting) pending();
   }
 }
 
-function applyLiveSubtitleTransform() {
-  if (!state.renderedPreviewSettings || !state.renderedPreviewLayout || !elements.previewStage.classList.contains('has-image')) return;
-  const currentPosition = Number(elements.position.value);
-  const currentScale = Number(elements.scale.value);
-  const { playResY, lineCount } = state.renderedPreviewLayout;
-  const anchor = (position, scalePercent) => {
-    const topRoom = Math.min(playResY * 0.3, 4 + 30 * (scalePercent / 100) * lineCount);
-    return (topRoom + (playResY - 4 - topRoom) * position / 100) / playResY;
-  };
-  const renderedAnchor = anchor(state.renderedPreviewSettings.positionPercent, state.renderedPreviewSettings.scalePercent);
-  const currentAnchor = anchor(currentPosition, currentScale);
-  const positionDelta = (currentAnchor - renderedAnchor) * 100;
-  const scaleRatio = currentScale / state.renderedPreviewSettings.scalePercent;
-  elements.previewSubtitles.style.transformOrigin = `50% ${currentAnchor * 100}%`;
-  elements.previewSubtitles.style.transform = `translate3d(0, ${positionDelta}%, 0) scale(${scaleRatio})`;
-}
-
-function beginLiveSubtitleAdjustment() {
-  clearTimeout(state.previewTimer);
-  elements.previewSpinner.hidden = true;
-  applyLiveSubtitleTransform();
-}
-
-function schedulePreview(delay = 320) {
+function schedulePreview(reportStatus = true) {
+  if (!state.videoPath || !state.metadata) return;
+  state.previewDirty = true;
+  if (state.exporting) return;
   clearTimeout(state.previewTimer);
   state.previewRequest += 1;
-  state.previewTimer = setTimeout(renderPreview, delay);
+  state.previewPending = null;
+  state.previewTimer = setTimeout(() => {
+    state.previewTimer = null;
+    renderPreview(reportStatus);
+  }, 0);
 }
+
+restoreSubtitleSettings();
+const sliderCaptions = [...document.querySelectorAll('.slider')].map(enhanceSlider);
 
 elements.videoPicker.addEventListener('click', async () => setVideo(await api.chooseVideo()));
 elements.subtitlePicker.addEventListener('click', async () => setSubtitle(await api.chooseSubtitle()));
@@ -555,16 +587,16 @@ elements.position.addEventListener('input', () => {
   elements.positionValue.textContent = value === 0 ? 'Top' : value === 50 ? 'Middle' : value === 100 ? 'Bottom' : `${value}% from top`;
   saveSubtitleSettings();
   updateAutomaticOutput();
-  beginLiveSubtitleAdjustment();
+  schedulePreview();
 });
-elements.scale.addEventListener('input', () => { elements.scaleValue.textContent = `${elements.scale.value}%`; saveSubtitleSettings(); updateAutomaticOutput(); beginLiveSubtitleAdjustment(); });
+elements.scale.addEventListener('input', () => { elements.scaleValue.textContent = `${elements.scale.value}%`; saveSubtitleSettings(); updateAutomaticOutput(); schedulePreview(); });
 elements.quality.addEventListener('input', () => {
   saveSubtitleSettings();
   updateAutomaticOutput();
   refreshQualityDisplay();
 });
 elements.windowsEncoder.addEventListener('change', () => { saveSubtitleSettings(); encoderPresetDescription(); syncEncoderChips(); updateEstimate(); });
-elements.seek.addEventListener('input', () => { elements.seekCurrent.textContent = formatTime(elements.seek.value); schedulePreview(220); });
+elements.seek.addEventListener('input', () => { elements.seekCurrent.textContent = formatTime(elements.seek.value); schedulePreview(); });
 elements.subtitleMode.addEventListener('click', () => setMode('subtitles'));
 elements.compressMode.addEventListener('click', () => setMode('compress'));
 const MAX_TARGET_MB = 250;
@@ -573,40 +605,72 @@ function syncTargetRange() {
   targetRange.value = String(Math.max(1, Math.min(MAX_TARGET_MB, Number(elements.targetSize.value) || 25)));
   targetRange.refreshSlider();
 }
-// Live plan from the backend (same checks the export runs): fills the estimate tiles and blocks
-// targets that are too small for the video's length.
-let estimateTimer = 0, estimateRequest = 0;
+// Live estimates are independent of export readiness. Export validates the current target itself.
+let estimateFrame = 0;
+let estimateRequest = 0;
+let estimatePending = false;
+let estimateBusy = false;
+
+function showEstimateStatus(note, error = false) {
+  elements.estNote.textContent = note;
+  elements.estNote.classList.toggle('error', error);
+  elements.estimate.classList.toggle('bad', error);
+}
+
 function updateEstimate() {
-  clearTimeout(estimateTimer);
-  estimateTimer = setTimeout(async () => {
-    const request = ++estimateRequest;
+  estimateRequest += 1;
+  estimatePending = state.mode === 'compress' && Boolean(state.metadata);
+  if (!estimatePending) {
+    $('cpuNote').hidden = true;
+    elements.estRes.textContent = '—';
+    elements.estRate.textContent = '—';
+    showEstimateStatus('Choose a video to see the estimate.');
+    return;
+  }
+  queueEstimate();
+}
+
+function queueEstimate() {
+  if (estimateBusy || estimateFrame || !estimatePending) return;
+  estimateFrame = requestAnimationFrame(async () => {
+    estimateFrame = 0;
+    if (!estimatePending) return;
+    const request = estimateRequest;
+    const metadata = state.metadata;
     const target = Number(elements.targetSize.value);
-    const show = (res, fps, rate, note, bad) => {
-      elements.estRes.textContent = res; elements.estFps.textContent = fps; elements.estRate.textContent = rate;
-      elements.estNote.textContent = note;
-      elements.estNote.classList.toggle('error', Boolean(bad));
-      elements.estimate.classList.toggle('bad', Boolean(bad));
-      state.planError = bad ? note : '';
-      refreshReady();
-    };
-    if (!state.metadata) return show('-', '-', '-', 'Choose a video to see the estimate.', false);
-    // CPU is always x264 (H.264); a chosen GPU only offers AV1 if that GPU passed the AV1 test.
     const encoder = elements.windowsEncoder.value;
-    const av1Pool = encoder === 'software' ? [] : encoder === 'auto' ? state.availableAv1Encoders : state.availableAv1Encoders.filter(value => value === encoder);
-    const av1 = av1Pool.length > 0 && elements.compressionCodec.value !== 'h264';
+    const codec = elements.compressionCodec.value;
+    const av1 = codec !== 'h264' &&
+      state.availableAv1Encoders.some(value => encoder === 'auto' || encoder === value);
+    estimateBusy = true;
     try {
-      const plan = await api.planCompression(state.metadata, target, av1, encoder);
-      $('cpuNote').hidden = !(plan.usesCpu && encoder !== 'software');
+      const plan = await api.planCompression(metadata, target, av1, encoder);
+      if (state.mode !== 'compress' || state.metadata !== metadata ||
+          elements.windowsEncoder.value !== encoder || elements.compressionCodec.value !== codec) return;
+      const rate = plan.videoBitrate >= 1e6
+        ? `${(plan.videoBitrate / 1e6).toFixed(3)} Mbps`
+        : `${Math.round(plan.videoBitrate / 1000)} kbps`;
+      // Show intermediate results during a drag and apply notices for the latest target only.
+      elements.estRes.textContent = `${plan.outputHeight}p`;
+      elements.estRate.textContent = rate;
       if (request !== estimateRequest) return;
-      const rate = plan.videoBitrate >= 1e6 ? `${(plan.videoBitrate / 1e6).toFixed(1)} Mbps` : `${Math.round(plan.videoBitrate / 1000)} kbps`;
-      const fps = Number.isInteger(plan.outputFps) ? plan.outputFps : plan.outputFps.toFixed(1);
-      show(`${plan.outputHeight}p`, `${fps} fps`, rate, 'Estimate only. Resolution and frame rate are chosen automatically to fit.', false);
+      estimatePending = false;
+      $('cpuNote').hidden = !(plan.usesCpu && encoder !== 'software');
+      showEstimateStatus(plan.bitrateCapped
+        ? 'Bitrate is capped based on the source. A larger target won’t increase it.'
+        : 'Source frame timing is preserved.');
     } catch (error) {
       if (request !== estimateRequest) return;
+      estimatePending = false;
       $('cpuNote').hidden = true;
-      show('-', '-', '-', String(error), true);
+      elements.estRes.textContent = '—';
+      elements.estRate.textContent = '—';
+      showEstimateStatus(String(error), true);
+    } finally {
+      estimateBusy = false;
+      queueEstimate();
     }
-  }, 120);
+  });
 }
 targetRange.addEventListener('input', () => {
   elements.targetSize.value = targetRange.value;
@@ -624,7 +688,6 @@ elements.targetSize.addEventListener('input', () => {
   const target = Number(elements.targetSize.value);
   if (Number.isFinite(target) && target >= 1 && target <= MAX_TARGET_MB) localStorage.setItem(COMPRESSION_TARGET_KEY, String(target));
   updateAutomaticOutput();
-  refreshReady();
 });
 elements.compressionCodec.addEventListener('change', () => {
   localStorage.setItem(COMPRESSION_CODEC_KEY, elements.compressionCodec.value);
@@ -639,17 +702,30 @@ function stepTargetSize(delta) {
 elements.targetDown.addEventListener('click', () => stepTargetSize(-1));
 elements.targetUp.addEventListener('click', () => stepTargetSize(1));
 
-async function startCompression(isTest = false) {
-  if (state.planError) { setStatus(state.planError, 'error'); return; }
+function beginExport() {
   clearTimeout(state.previewTimer);
   state.previewRequest += 1;
+  elements.previewSpinner.hidden = true;
   state.exporting = true;
   refreshReady();
   elements.cancelButton.hidden = false;
   elements.progressWrap.hidden = false;
   elements.progressBar.style.width = '0%';
   elements.progressValue.textContent = '0%';
-  const targetSizeMB = Math.min(MAX_TARGET_MB, Number(elements.targetSize.value));
+}
+
+function finishExport() {
+  state.exporting = false;
+  elements.cancelButton.hidden = true;
+  elements.progressWrap.hidden = true;
+  if (state.previewDirty) schedulePreview(false);
+  refreshReady();
+  fitWindowToContent();
+}
+
+async function startCompression(isTest = false) {
+  beginExport();
+  const targetSizeMB = Number(elements.targetSize.value);
   const codecPreference = elements.compressionCodec.value;
   const clipDuration = isTest ? Math.min(30, state.metadata.duration) : 0;
   const clipStart = isTest ? Math.max(0, Math.min(Number(elements.seek.value), state.metadata.duration - clipDuration)) : 0;
@@ -661,42 +737,37 @@ async function startCompression(isTest = false) {
   fitWindowToContent();
   try {
     const result = await api.startCompression({
-      videoPath: state.videoPath, outputPath, metadata: state.metadata, targetSizeMB, codecPreference, encoderPreference: elements.windowsEncoder.value, clipStart, clipDuration,
+      videoPath: state.videoPath, outputPath, metadata: state.metadata, targetSizeMb: targetSizeMB, codecPreference, encoderPreference: elements.windowsEncoder.value, clipStart, clipDuration,
     });
     const actualMB = result.bytes / 1024 / 1024;
     const codecLabel = /^av1_/.test(result.encoder) ? 'AV1' : 'H.264';
-    const encoderLabel = /nvenc/.test(result.encoder) ? `NVIDIA ${codecLabel} NVENC CQP ${result.nvencQp || 20}`
+    const encoderLabel = /nvenc/.test(result.encoder) ? `NVIDIA ${codecLabel} NVENC${result.nvencQp == null ? '' : ` CQP ${result.nvencQp}`}`
       : /qsv/.test(result.encoder) ? `Intel ${codecLabel} Quick Sync`
         : /amf/.test(result.encoder) ? `AMD ${codecLabel} AMF`
-          : 'CPU x264 two-pass';
+          : result.encoder === 'h264_videotoolbox' ? 'Apple VideoToolbox (H.264)'
+            : 'CPU x264 two-pass';
     setStatus(`Finished with ${encoderLabel}: ${basename(result.output)} • ${actualMB.toFixed(1)} MB • ${result.metadata.width}×${result.metadata.height} — click here to show it.`, 'success');
-    elements.status.onclick = () => api.revealOutput(result.output);
+    const output = result.output;
+    elements.status.onclick = () => api.revealOutput(output);
   } catch (error) {
-    setStatus(error.message.includes('SIGTERM') ? 'Compression cancelled.' : error.message, error.message.includes('SIGTERM') ? '' : 'error');
+    const message = error instanceof Error ? error.message : String(error);
+    const cancelled = message === 'Export cancelled.';
+    setStatus(cancelled ? 'Compression cancelled.' : message, cancelled ? '' : 'error');
   } finally {
-    state.exporting = false;
-    elements.cancelButton.hidden = true;
-    refreshReady();
-    fitWindowToContent();
+    finishExport();
   }
 }
 
 async function startBurn(isTest = false) {
-  clearTimeout(state.previewTimer);
-  state.previewRequest += 1;
-  state.exporting = true;
-  refreshReady();
-  elements.cancelButton.hidden = false;
-  elements.progressWrap.hidden = false;
-  elements.progressBar.style.width = '0%';
-  elements.progressValue.textContent = '0%';
+  beginExport();
   const quality = Number(elements.quality.value);
   const clipDuration = isTest ? Math.min(30, state.metadata.duration) : 0;
   const clipStart = isTest ? Math.max(0, Math.min(Number(elements.seek.value), state.metadata.duration - clipDuration)) : 0;
   const outputPath = isTest ? `${dirname(state.videoPath)}${extless(state.videoPath)} — 30s test.mp4` : state.outputPath;
   const modeLabel = isTest ? `30-second test from ${formatTime(clipStart)}` : 'full video';
-  const awakeNote = ' Your Mac will stay awake if the screen locks or turns off.';
-  const hardwareName = state.platform === 'windows' && elements.windowsEncoder.value === 'auto'
+  const awakeNote = state.platform === 'macos' ? ' Your Mac will stay awake while encoding.' : '';
+  const hardwareName = elements.windowsEncoder.value === 'software' ? 'CPU'
+    : state.platform === 'windows' && elements.windowsEncoder.value === 'auto'
     ? autoEncoderLabel() || 'automatic encoding'
     : /videotoolbox/i.test(state.videoEncoder) ? 'Apple VideoToolbox' : 'the selected encoding settings';
   const burnDescription = state.metadata?.isHdr
@@ -719,14 +790,13 @@ async function startBurn(isTest = false) {
     const hdrNote = result.dolbyVisionConverted ? ' • Dolby Vision converted safely to HDR10-compatible output' : '';
     const testNote = isTest ? `30-second test from ${formatTime(result.clipStart)} • ` : '';
     setStatus(`${testNote}Finished with ${encoderLabel}${hdrNote}: ${basename(result.output)} — click here to show it.`, 'success');
-    elements.status.onclick = () => api.revealOutput(result.output);
+    const output = result.output;
+    elements.status.onclick = () => api.revealOutput(output);
   } catch (error) {
-    setStatus(error.message.includes('SIGTERM') ? 'Export cancelled.' : error.message, error.message.includes('SIGTERM') ? '' : 'error');
+    const message = error instanceof Error ? error.message : String(error);
+    setStatus(message, message === 'Export cancelled.' ? '' : 'error');
   } finally {
-    state.exporting = false;
-    elements.cancelButton.hidden = true;
-    refreshReady();
-    fitWindowToContent();
+    finishExport();
   }
 }
 elements.testButton.addEventListener('click', () => state.mode === 'compress' ? startCompression(true) : startBurn(true));
@@ -734,6 +804,7 @@ elements.exportButton.addEventListener('click', () => state.mode === 'compress' 
 elements.cancelButton.addEventListener('click', () => api.cancelExport());
 elements.updateButton.addEventListener('click', () => state.availableUpdate ? installAvailableUpdate() : checkForUpdates(true));
 api.onProgress(value => {
+  if (!state.exporting) return;
   const percent = Math.max(0, Math.min(100, Math.round(value * 100)));
   elements.progressBar.style.width = `${percent}%`;
   elements.progressValue.textContent = `${percent}%`;
@@ -750,13 +821,11 @@ for (const target of [elements.videoPicker, elements.subtitlePicker]) {
   });
 }
 
-restoreSubtitleSettings();
 const savedCompressionTarget = Number(localStorage.getItem(COMPRESSION_TARGET_KEY));
 if (Number.isFinite(savedCompressionTarget) && savedCompressionTarget >= 1 && savedCompressionTarget <= 250) {
   elements.targetSize.value = String(savedCompressionTarget);
 }
 syncTargetRange();
-refreshSliders();
 syncEncoderChips();
 syncCodecChips();
 setMode('subtitles'); // always start on Burn

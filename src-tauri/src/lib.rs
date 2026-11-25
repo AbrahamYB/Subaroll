@@ -4,6 +4,31 @@ mod updates;
 use media::AppState;
 use tauri::Manager;
 
+#[cfg(target_os = "macos")]
+fn place_main_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    let default_size = tauri::LogicalSize::new(880.0, 792.0);
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        window.set_size(default_size)?;
+        return window.center();
+    };
+    let area = monitor.work_area();
+    let scale = monitor.scale_factor();
+    let mut size = default_size.to_physical::<u32>(scale);
+    let margin = (24.0 * scale).round() as u32; // 12 logical points at each edge.
+    size.height = size.height.min(area.size.height.saturating_sub(margin).max(1));
+    let center = tauri::PhysicalPosition::new(
+        area.position.x + (area.size.width as i32 - size.width as i32) / 2,
+        area.position.y + (area.size.height as i32 - size.height as i32) / 2,
+    );
+    window.set_size(size)?;
+    window.set_position(center)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -16,13 +41,15 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::default())
         .setup(|app| {
-            // Force the fixed size: some Windows setups open the window oversized. macOS's overlay
-            // title bar needs 28px more height than Windows' native one.
             if let Some(window) = app.get_webview_window("main") {
-                let height = if cfg!(target_os = "macos") { 792.0 } else { 764.0 };
                 let _ = window.unmaximize();
-                let _ = window.set_size(tauri::LogicalSize::new(880.0, height));
-                let _ = window.center();
+                #[cfg(target_os = "macos")]
+                let _ = place_main_window(&window);
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let _ = window.set_size(tauri::LogicalSize::new(880.0, 764.0));
+                    let _ = window.center();
+                }
             }
             Ok(())
         })
@@ -44,6 +71,11 @@ pub fn run() {
             updates::check_for_update,
             updates::install_update,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Subaroll");
+        .build(tauri::generate_context!())
+        .expect("error while building Subaroll")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                media::cancel_running_export(&app.state::<AppState>());
+            }
+        });
 }

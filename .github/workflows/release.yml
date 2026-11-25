@@ -70,7 +70,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: echo "short=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and publish native installer
+      - name: Build and upload native installer
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -79,13 +79,7 @@ jobs:
         with:
           tagName: ${{ inputs.release_tag || github.ref_name }}
           releaseName: Subaroll ${{ inputs.release_tag || github.ref_name }}
-          releaseBody: |
-            Subaroll v1.2 security and reliability update for Apple silicon macOS and Windows 11 x64.
-
-            Hardens the app's WebView content policy, prevents preview/export work from piling up, bounds media-tool output and subtitle/font resources, pins release workflow actions, disables Windows-only GPU controls on macOS, and keeps the full workspace inset from the window edges. Full details are in [changelogs.md](https://github.com/AbrahamYB/Subaroll/blob/main/changelogs.md).
-
-            Download the installer for your platform from the assets below.
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true

@@ -4,22 +4,31 @@ Release history for Subaroll. Public releases use the `major.minor` format (`v1.
 
 ## v1.3
 
-Subaroll has a redesigned landscape workspace, automatic subtitle matching, and a rebuilt compression workflow that respects the chosen file size.
+Subaroll v1.3 brings a redesigned workspace, automatic subtitle matching, and rebuilt target-size compression to Apple silicon Macs and Windows 11 x64.
 
 ### Layout and subtitle burn-in
 
 - A fixed window keeps the 16:9 preview above a three-column dock with encoder choices, settings, file pickers, and export controls. The app opens in Burn mode, and Check for updates is in the lower-left corner.
-- Sliders move continuously and settle gently near landmarks such as Middle, Original, and Recommended. The CQ slider controls burn-in quality, with the encoder preset chosen automatically.
+- On macOS, the window opens centered in the space between the menu bar and Dock. On shorter displays the preview area gives up height to keep the controls visible.
+- Sliders move continuously and highlight landmarks such as Middle, Original, and Recommended immediately, including when a saved value is restored on launch. The CQ slider controls burn-in quality, with the encoder preset chosen automatically.
+- Export and 30-second test buttons stay ready while sliders move once the required files are selected. Compression validates the target selected when you click.
 - Selecting a video looks for matching subtitles beside it or in a `Subs` or `Subtitles` folder. A subtitle selected manually stays selected.
-- On macOS, Burn uses HEVC VideoToolbox. Compress offers Apple hardware encoding and CPU encoding, and the title-bar strip can be dragged to move the window.
+- Selecting a video loads a seekable preview in either mode. Burn renders the current delay, position, and size using the same libass filters as export. Explicit ASS positions and movement stay intact. Seeking starts immediately, and preview frames are resized after rendering to reduce load time.
+- Auto prefers Apple VideoToolbox on macOS. Both modes let you select Apple hardware or CPU encoding. The encoder chips stay visible in the same order on both platforms, with unavailable options disabled. The macOS title-bar strip can be dragged to move the window.
 
 ### Compression
 
+- Fixed an issue that could prevent compression from starting.
 - The target is a hard output ceiling, up to 250 MB. Targets of 5 MB or more reserve 1% against the decimal MB limit. Smaller targets use 1,048,576 bytes per MB. If the target leaves less than 150 kbps for video, the app shows the minimum size it will accept.
-- Live estimates show resolution, frame rate, and video bitrate using the same planner as export. The planner takes source bitrate into account and can choose 720p60 for tight H.264 targets while keeping 60 fps.
+- Resolution and video bitrate estimates update during slider movement, and the app explains when bitrate reaches its source-based cap. Source FPS stays fixed in the estimate, and compression preserves source frame timing.
 - NVIDIA tries several constant-QP settings to find a good fit. If needed, it tries bitrate control and then CPU encoding. Intel, AMD, and Apple hardware can retry at a corrected bitrate before falling back to CPU. On Windows, video budgets below 1 Mbps use two-pass x264 directly.
 - The 30-second test is available in Compress mode. It scales the size ceiling to the test clip so you can sample the full job's planned bitrate.
 - AV1 is available when compatible hardware passes detection. CPU encoding uses two-pass H.264.
+
+### Export cleanup
+
+- Burn and Compress clear progress and release export resources when a job ends.
+- Cancelled or failed exports clean up temporary files and preserve existing output.
 
 ## v1.2
 

@@ -13,11 +13,10 @@
       <div class="preview-slot">
         <div id="previewStage" class="preview-stage">
           <img id="previewFrame" class="preview-frame" alt="Video preview frame">
-          <img id="previewSubtitles" class="preview-subtitles" alt="Rendered subtitle preview">
           <div id="emptyPreview" class="empty-preview">
             <div class="preview-icon">CC</div>
             <strong>Exact rendered preview</strong>
-            <span>Choose a video and subtitle file</span>
+            <span>Choose a video</span>
           </div>
           <div id="previewSpinner" class="spinner" hidden></div>
         </div>
@@ -40,10 +39,10 @@
               <div class="hd"><label>Encoder</label><output id="encoderAvailability" class="sr-only">Windows only</output></div>
               <div id="encoderChips" class="chips" role="radiogroup" aria-label="Encoder">
                 <button type="button" class="chip on" data-value="auto" role="radio"><i class="dt"></i>Auto</button>
-                <button type="button" class="chip win-only" data-value="nvenc" role="radio"><i class="dt"></i>NVIDIA</button>
-                <button type="button" class="chip win-only" data-value="qsv" role="radio"><i class="dt"></i>Intel</button>
-                <button type="button" class="chip win-only" data-value="amf" role="radio"><i class="dt"></i>AMD</button>
-                <button type="button" class="chip mac-only" data-value="videotoolbox" role="radio" title="Apple VideoToolbox (hardware H.264)"><i class="dt"></i>Apple</button>
+                <button type="button" class="chip" data-value="nvenc" role="radio"><i class="dt"></i>NVIDIA</button>
+                <button type="button" class="chip" data-value="qsv" role="radio"><i class="dt"></i>Intel</button>
+                <button type="button" class="chip" data-value="amf" role="radio"><i class="dt"></i>AMD</button>
+                <button type="button" class="chip" data-value="videotoolbox" role="radio" title="Apple VideoToolbox"><i class="dt"></i>Apple</button>
                 <button type="button" class="chip" data-value="software" role="radio" title="CPU: x264 (H.264). Burn mode uses x265 for HDR and 10-bit video."><i class="dt"></i>CPU</button>
               </div>
               <select id="windowsEncoder" class="sr-only" disabled tabindex="-1" aria-hidden="true">
@@ -99,7 +98,7 @@
               </div>
               <div id="estimate" class="estimate">
                 <div><span>Resolution</span><b id="estRes">-</b></div>
-                <div><span>Frame rate</span><b id="estFps">-</b></div>
+                <div><span>Source FPS</span><b id="estFps">-</b></div>
                 <div><span>Video bitrate</span><b id="estRate">-</b></div>
               </div>
               <div class="codec-row">
@@ -117,7 +116,7 @@
                 <p id="compressionCodecHint" class="sr-only"></p>
                 <span id="cpuNote" class="cpu-note" hidden>Under 1 Mbps: CPU (x264)</span>
               </div>
-              <small id="estNote" class="hint">Resolution and frame rate are chosen automatically to fit.</small>
+              <small id="estNote" class="hint">Resolution and bitrate adapt to the target. Source frame timing is preserved.</small>
             </div>
           </div>
         </div>
