@@ -17,13 +17,13 @@ Subaroll v1.3 brings a redesigned workspace, automatic subtitle matching, and re
 
 #### Compression fixes
 
-- Fixed NVIDIA encodes that could land far below the chosen size. In the original tests, a single correction pass produced files at 10.4% of source size against a 20% target. NVIDIA now tries up to four constant-QP settings and keeps the largest result that fits.
-- The selected size is a strict ceiling. Earlier versions accepted files up to 3% over target. From 5 MB up, Subaroll uses 1,000,000 bytes per MB and reserves 1% for upload limits. Below 5 MB, it uses 1,048,576 bytes per MB.
-- When an encode cannot fit, Subaroll reports “Couldn't fit this video under X MB. Choose a larger size.” It removes the failed output so an oversized file is never delivered. The follow-up export cleanup also preserves any existing file at the destination.
-- On Windows, a planned video bitrate below 1 Mbps uses two-pass CPU encoding (x264) immediately. In the original 20 MB tests, NVIDIA missed the target on five- and ten-minute 1080p60 clips at 0.44 and 0.19 Mbps. Intel Quick Sync also missed the ten-minute target.
-- If a bitrate-controlled Intel, AMD, or Apple hardware encode overshoots, Subaroll retries at a lower bitrate and falls back to two-pass x264 if needed. NVIDIA first searches its constant-QP settings, then tries bitrate control before falling back to x264.
-- Targets that leave less than 150 kbps for video are refused before encoding, with the minimum size shown. The planner also uses a 1.5× source bitrate cap when the source bitrate is known, subject to the video bitrate floor.
-- Added Apple VideoToolbox in Mac Compress mode, with x264 as the fallback. The original rework was tested on Windows. The Apple hardware and CPU paths were verified on Apple silicon during follow-up testing.
+- Fixed compression landing far below the size you picked. With NVIDIA, a single correction pass left test clips at about half the target (10.4% of the source instead of 20%). The app now tries up to four quality settings and keeps the largest file that fits.
+- The size you pick is now a strict ceiling. From **5 MB up**, the app uses 1,000,000 bytes per MB and reserves 1% so the file fits services that count that way. **Below 5 MB**, the app keeps the original 1,048,576 bytes per MB and applies no margin. For example, a 4 MB target allows up to 4,194,304 bytes.
+- If a size can't be reached, the app says “Couldn't fit this video under X MB. Choose a larger size.” and deletes the partial file.
+- Very small sizes go straight to the CPU encoder on Windows. When the planned video bitrate is under 1 Mbps, every encoder choice uses two-pass x264. In testing, NVIDIA could not fit 20 MB for a five-minute or ten-minute 1080p60 video (0.44 and 0.19 Mbps), and Intel Quick Sync could not fit the ten-minute one.
+- If a bitrate-controlled hardware encode comes out over the target, the app re-encodes once at a lower bitrate and switches to two-pass x264 if it still can't fit. NVIDIA tries bitrate control after its quality-setting search.
+- Sizes that would leave under 150 kbps of video are refused before encoding starts, with the smallest size that works. The planner limits video bitrate to 1.5× the source bitrate when known, subject to the video bitrate floor.
+- On macOS, Compress mode now uses Apple VideoToolbox, with the CPU encoder as the fallback. Both paths were verified on Apple silicon during follow-up testing.
 
 ### Follow-up fixes after the handoff
 
