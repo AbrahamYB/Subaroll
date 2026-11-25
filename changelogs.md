@@ -11,11 +11,19 @@ Subaroll v1.3 brings a redesigned workspace, automatic subtitle matching, and re
 - Rebuilt the workspace around a fixed-size 16:9 preview with a three-column dock for encoders, sliders, file selection, and export actions. Burn and Compress switch within the same dock, the app starts in Burn mode, and Check for updates sits below the encoder list.
 - Introduced continuous pill sliders with soft snap points. Subtitle size now goes up to 200%. Burn uses the encoder's quality preset automatically, with CQ as the quality control.
 - Added offline subtitle matching beside the video and in nearby `Subs` or `Subtitles` folders. A matching filename takes priority, including names with a language suffix. The app can also match by series, season, and episode. A manually selected subtitle stays selected.
-- Added an editable compression target up to 250 MB, estimates for the planned output, and a 30-second test that uses the full job's planned bitrate. The target is a hard ceiling. At 5 MB and above, Subaroll reserves 1% of the decimal MB limit. Smaller targets use 1,048,576 bytes per MB. Targets below 150 kbps of video are refused with a minimum size, and the planner uses a 1.5× source bitrate cap when the source bitrate is known, subject to the minimum video bitrate.
-- Added Auto, AV1, and H.264 codec choices to the new Compress interface. AV1 requires compatible hardware. The planner favors 720p over 900p for 60 fps H.264 footage at roughly 2.4–3.2 Mbps.
-- NVIDIA compression tries up to four constant-QP settings and keeps the largest result within the target. If needed, it falls back to bitrate control and then two-pass x264. Intel, AMD, and Apple hardware can retry at a corrected bitrate before falling back to x264.
-- On Windows, planned video bitrates below 1 Mbps go directly to two-pass x264. On Mac, Compress can use Apple VideoToolbox even at low bitrates, with x264 as the fallback.
+- Added an editable compression target up to 250 MB, live estimates for resolution, frame rate, and video bitrate, and a 30-second test that uses the full job's planned bitrate.
+- Added encoder selection and Auto, AV1, and H.264 codec choices to the new Compress interface. AV1 requires compatible hardware. The planner favors 720p over 900p for 60 fps H.264 footage at roughly 2.4–3.2 Mbps.
 - Fixed `npm start` on Windows with Node 22.
+
+#### Compression fixes
+
+- Fixed NVIDIA encodes that could land far below the chosen size. In the original tests, a single correction pass produced files at 10.4% of source size against a 20% target. NVIDIA now tries up to four constant-QP settings and keeps the largest result that fits.
+- The selected size is a strict ceiling. Earlier versions accepted files up to 3% over target. From 5 MB up, Subaroll uses 1,000,000 bytes per MB and reserves 1% for upload limits. Below 5 MB, it uses 1,048,576 bytes per MB.
+- When an encode cannot fit, Subaroll reports “Couldn't fit this video under X MB. Choose a larger size.” It removes the failed output so an oversized file is never delivered. The follow-up export cleanup also preserves any existing file at the destination.
+- On Windows, a planned video bitrate below 1 Mbps uses two-pass CPU encoding (x264) immediately. In the original 20 MB tests, NVIDIA missed the target on five- and ten-minute 1080p60 clips at 0.44 and 0.19 Mbps. Intel Quick Sync also missed the ten-minute target.
+- If a bitrate-controlled Intel, AMD, or Apple hardware encode overshoots, Subaroll retries at a lower bitrate and falls back to two-pass x264 if needed. NVIDIA first searches its constant-QP settings, then tries bitrate control before falling back to x264.
+- Targets that leave less than 150 kbps for video are refused before encoding, with the minimum size shown. The planner also uses a 1.5× source bitrate cap when the source bitrate is known, subject to the video bitrate floor.
+- Added Apple VideoToolbox in Mac Compress mode, with x264 as the fallback. The original rework was tested on Windows. The Apple hardware and CPU paths were verified on Apple silicon during follow-up testing.
 
 ### Follow-up fixes after the handoff
 
