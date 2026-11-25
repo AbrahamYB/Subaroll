@@ -19,11 +19,28 @@ Subaroll v1.3 brings a redesigned workspace, automatic subtitle matching, and re
 
 ### Follow-up fixes after the handoff
 
-- Centered the Mac window between the menu bar and Dock, gave shorter displays a smaller preview to keep the controls visible, and made the title-bar strip draggable. Both modes now let Mac users choose Apple VideoToolbox or CPU. Encoder chips stay in the same order across platforms, with unavailable choices disabled.
-- Made snap points highlight immediately, including when opening the app with a saved or default value on a landmark. Export and test buttons stay ready during slider adjustments once the required files are selected.
-- Made the preview load with a video alone in either mode and start rendering immediately when seeking. Preview frames are resized after rendering to load faster. Burn now uses the same libass filters for preview and export, so the preview reflects delay, size, and position while preserving authored ASS positioning and movement.
-- Fixed the Compress button so the selected target reaches the encoder. Bitrate and resolution estimates update during slider movement, the app explains when the source-based bitrate cap is reached, and compression preserves the source FPS and frame timing.
-- Burn and Compress clear progress and release export resources when a job ends. Cancelled or failed jobs remove temporary files and preserve existing output.
+#### Window and controls
+
+- On Mac, the window opens centered in the usable space between the menu bar and Dock. On shorter displays, the preview gives up height so the controls fit. The title-bar strip can be dragged to move the window.
+- Both modes on Mac let you select Apple VideoToolbox or CPU. Auto prefers VideoToolbox when available, using HEVC for Burn and H.264 for Compress. The encoder choices appear in the same order on Mac and Windows, with unsupported choices visible and disabled.
+- Slider snap points turn blue immediately when reached, including for a saved or default value on launch. Export and 30-second test buttons stay enabled during slider adjustments once the required files are ready.
+
+#### Preview and subtitles
+
+- Selecting a video shows a seekable preview in both modes. Compress shows the source frame, and Burn can show the video before a subtitle file is selected. A subtitle preview error leaves the video visible.
+- Burn uses the same libass rendering as export for delay, position, and size. Authored ASS positions and movement stay in place, including when a positioned cue shares its style with ordinary dialogue.
+- Seeking starts rendering immediately. Rapid changes keep only the latest pending preview, FFmpeg detection is reused, and frames are resized after rendering to load faster. Replacing a preview releases the previous image.
+
+#### Compression and export reliability
+
+- The Compress button now sends the selected file-size target to the encoder. The export checks that target when you click, even while the live estimates are still updating.
+- Resolution and bitrate estimates update while dragging the target-size slider and reflect the source-based bitrate cap. The FPS display stays tied to the source, and compression preserves frame timing without dropping frames to meet the target.
+- Burn and Compress clear progress after an export and reuse the current preview when its settings are unchanged. Cancellation stops the active encoder and prevents later passes from starting. macOS releases its keep-awake helper after each pass.
+- An export is saved to its final path after validation. Cancelled or failed jobs clean up temporary files, and any previous file at the destination is preserved.
+
+#### Release builds
+
+- Published an Apple silicon DMG and Windows 11 x64 setup EXE and MSI, with signed in-app updates for both platforms. The Windows installer checks verify that the GUI app, FFmpeg, and FFprobe are included.
 
 ## v1.2
 
