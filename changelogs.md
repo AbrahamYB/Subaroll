@@ -17,8 +17,8 @@ Subaroll v1.3 brings a redesigned workspace, automatic subtitle matching, and re
 
 #### Compression fixes
 
-- Fixed compression landing far below the size you picked. With NVIDIA, a single correction pass left test clips at about half the target (10.4% of the source instead of 20%). The app now tries up to four quality settings and keeps the largest file that fits.
-- The size you pick is now a strict ceiling. From **5 MB up**, the app uses 1,000,000 bytes per MB and reserves 1% so the file fits services that count that way. **Below 5 MB**, the app keeps the original 1,048,576 bytes per MB and applies no margin. For example, a 4 MB target allows up to 4,194,304 bytes.
+- Fixed compression landing far below the selected size. With NVIDIA, a single correction pass left test clips at about half the target (10.4% of the source instead of 20%). The app now tries up to four quality settings and keeps the largest file that fits.
+- The selected size is now a strict ceiling. From **5 MB up**, the app uses 1,000,000 bytes per MB and reserves 1% so the file fits services that count that way. **Below 5 MB**, the app keeps the original 1,048,576 bytes per MB and applies no margin. For example, a 4 MB target allows up to 4,194,304 bytes.
 - If a size can't be reached, the app says “Couldn't fit this video under X MB. Choose a larger size.” and deletes the partial file.
 - Very small sizes go straight to the CPU encoder on Windows. When the planned video bitrate is under 1 Mbps, every encoder choice uses two-pass x264. In testing, NVIDIA could not fit 20 MB for a five-minute or ten-minute 1080p60 video (0.44 and 0.19 Mbps), and Intel Quick Sync could not fit the ten-minute one.
 - If a bitrate-controlled hardware encode comes out over the target, the app re-encodes once at a lower bitrate and switches to two-pass x264 if it still can't fit. NVIDIA tries bitrate control after its quality-setting search.
@@ -30,7 +30,7 @@ Subaroll v1.3 brings a redesigned workspace, automatic subtitle matching, and re
 #### Window and controls
 
 - On Mac, the window opens centered in the usable space between the menu bar and Dock. On shorter displays, the preview gives up height so the controls fit. The title-bar strip can be dragged to move the window.
-- Both modes on Mac let you select Apple VideoToolbox or CPU. Auto prefers VideoToolbox when available, using HEVC for Burn and H.264 for Compress. The encoder choices appear in the same order on Mac and Windows, with unsupported choices visible and disabled.
+- Both modes on Mac offer Apple VideoToolbox or CPU encoding. Auto prefers VideoToolbox when available, using HEVC for Burn and H.264 for Compress. The encoder choices appear in the same order on Mac and Windows, with unsupported choices visible and disabled.
 - Slider snap points turn blue immediately when reached, including for a saved or default value on launch. Export and 30-second test buttons stay enabled during slider adjustments once the required files are ready.
 
 #### Preview and subtitles
@@ -41,7 +41,7 @@ Subaroll v1.3 brings a redesigned workspace, automatic subtitle matching, and re
 
 #### Compression and export reliability
 
-- The Compress button now sends the selected file-size target to the encoder. The export checks that target when you click, even while the live estimates are still updating.
+- The Compress button now sends the selected file-size target to the encoder. The export checks that target when the export button is clicked, even while the live estimates are still updating.
 - Resolution and bitrate estimates update while dragging the target-size slider and reflect the source-based bitrate cap. The FPS display stays tied to the source, and compression preserves frame timing without dropping frames to meet the target.
 - Burn and Compress clear progress after an export and reuse the current preview when its settings are unchanged. Cancellation stops the active encoder and prevents later passes from starting. macOS releases its keep-awake helper after each pass.
 - An export is saved to its final path after validation. Cancelled or failed jobs clean up temporary files, and any previous file at the destination is preserved.
