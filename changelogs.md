@@ -6,29 +6,24 @@ Release history for Subaroll. Public releases use the `major.minor` format (`v1.
 
 Subaroll v1.3 brings a redesigned workspace, automatic subtitle matching, and rebuilt target-size compression to Apple silicon Macs and Windows 11 x64.
 
-### Layout and subtitle burn-in
+### Original redesign and compression rework
 
-- A fixed window keeps the 16:9 preview above a three-column dock with encoder choices, settings, file pickers, and export controls. The app opens in Burn mode, and Check for updates is in the lower-left corner.
-- On macOS, the window opens centered in the space between the menu bar and Dock. On shorter displays the preview area gives up height to keep the controls visible.
-- Sliders move continuously and highlight landmarks such as Middle, Original, and Recommended immediately, including when a saved value is restored on launch. The CQ slider controls burn-in quality, with the encoder preset chosen automatically.
-- Export and 30-second test buttons stay ready while sliders move once the required files are selected. Compression validates the target selected when you click.
-- Selecting a video looks for matching subtitles beside it or in a `Subs` or `Subtitles` folder. A subtitle selected manually stays selected.
-- Selecting a video loads a seekable preview in either mode. Burn renders the current delay, position, and size using the same libass filters as export. Explicit ASS positions and movement stay intact. Seeking starts immediately, and preview frames are resized after rendering to reduce load time.
-- Auto prefers Apple VideoToolbox on macOS. Both modes let you select Apple hardware or CPU encoding. The encoder chips stay visible in the same order on both platforms, with unavailable options disabled. The macOS title-bar strip can be dragged to move the window.
+- Rebuilt the workspace around a fixed-size 16:9 preview with a three-column dock for encoders, sliders, file selection, and export actions. Burn and Compress switch within the same dock, the app starts in Burn mode, and Check for updates sits below the encoder list.
+- Introduced continuous pill sliders with soft snap points. Subtitle size now goes up to 200%. Burn uses the encoder's quality preset automatically, with CQ as the quality control.
+- Added offline subtitle matching beside the video and in nearby `Subs` or `Subtitles` folders. A matching filename takes priority, including names with a language suffix. The app can also match by series, season, and episode. A manually selected subtitle stays selected.
+- Added an editable compression target up to 250 MB, estimates for the planned output, and a 30-second test that uses the full job's planned bitrate. The target is a hard ceiling. At 5 MB and above, Subaroll reserves 1% of the decimal MB limit. Smaller targets use 1,048,576 bytes per MB. Targets below 150 kbps of video are refused with a minimum size, and the planner uses a 1.5× source bitrate cap when the source bitrate is known, subject to the minimum video bitrate.
+- Added Auto, AV1, and H.264 codec choices to the new Compress interface. AV1 requires compatible hardware. The planner favors 720p over 900p for 60 fps H.264 footage at roughly 2.4–3.2 Mbps.
+- NVIDIA compression tries up to four constant-QP settings and keeps the largest result within the target. If needed, it falls back to bitrate control and then two-pass x264. Intel, AMD, and Apple hardware can retry at a corrected bitrate before falling back to x264.
+- On Windows, planned video bitrates below 1 Mbps go directly to two-pass x264. On Mac, Compress can use Apple VideoToolbox even at low bitrates, with x264 as the fallback.
+- Fixed `npm start` on Windows with Node 22.
 
-### Compression
+### Follow-up fixes after the handoff
 
-- Fixed an issue that could prevent compression from starting.
-- The target is a hard output ceiling, up to 250 MB. Targets of 5 MB or more reserve 1% against the decimal MB limit. Smaller targets use 1,048,576 bytes per MB. If the target leaves less than 150 kbps for video, the app shows the minimum size it will accept.
-- Resolution and video bitrate estimates update during slider movement, and the app explains when bitrate reaches its source-based cap. Source FPS stays fixed in the estimate, and compression preserves source frame timing.
-- NVIDIA tries several constant-QP settings to find a good fit. If needed, it tries bitrate control and then CPU encoding. Intel, AMD, and Apple hardware can retry at a corrected bitrate before falling back to CPU. On Windows, video budgets below 1 Mbps use two-pass x264 directly.
-- The 30-second test is available in Compress mode. It scales the size ceiling to the test clip so you can sample the full job's planned bitrate.
-- AV1 is available when compatible hardware passes detection. CPU encoding uses two-pass H.264.
-
-### Export cleanup
-
-- Burn and Compress clear progress and release export resources when a job ends.
-- Cancelled or failed exports clean up temporary files and preserve existing output.
+- Centered the Mac window between the menu bar and Dock, gave shorter displays a smaller preview to keep the controls visible, and made the title-bar strip draggable. Both modes now let Mac users choose Apple VideoToolbox or CPU. Encoder chips stay in the same order across platforms, with unavailable choices disabled.
+- Made snap points highlight immediately, including when opening the app with a saved or default value on a landmark. Export and test buttons stay ready during slider adjustments once the required files are selected.
+- Made the preview load with a video alone in either mode and start rendering immediately when seeking. Preview frames are resized after rendering to load faster. Burn now uses the same libass filters for preview and export, so the preview reflects delay, size, and position while preserving authored ASS positioning and movement.
+- Fixed the Compress button so the selected target reaches the encoder. Bitrate and resolution estimates update during slider movement, the app explains when the source-based bitrate cap is reached, and compression preserves the source FPS and frame timing.
+- Burn and Compress clear progress and release export resources when a job ends. Cancelled or failed jobs remove temporary files and preserve existing output.
 
 ## v1.2
 
