@@ -6,7 +6,7 @@ Release history for Subaroll. Public releases use the `major.minor` format (`v1.
 
 Subaroll v1.3 brings a redesigned workspace, automatic subtitle matching, and rebuilt target-size compression to Apple silicon Macs and Windows 11 x64.
 
-### Original redesign and compression rework
+### Redesign and compression rework
 
 - Rebuilt the workspace around a fixed-size 16:9 preview with a three-column dock for encoders, sliders, file selection, and export actions. Burn and Compress switch within the same dock, the app starts in Burn mode, and Check for updates sits below the encoder list.
 - Introduced continuous pill sliders with soft snap points. Subtitle size now goes up to 200%. Burn uses the encoder's quality preset automatically, with CQ as the quality control.
@@ -23,9 +23,9 @@ Subaroll v1.3 brings a redesigned workspace, automatic subtitle matching, and re
 - Very small sizes go straight to the CPU encoder on Windows. When the planned video bitrate is under 1 Mbps, every encoder choice uses two-pass x264. In testing, NVIDIA could not fit 20 MB for a five-minute or ten-minute 1080p60 video (0.44 and 0.19 Mbps), and Intel Quick Sync could not fit the ten-minute one.
 - If a bitrate-controlled hardware encode comes out over the target, the app re-encodes once at a lower bitrate and switches to two-pass x264 if it still can't fit. NVIDIA tries bitrate control after its quality-setting search.
 - Sizes that would leave under 150 kbps of video are refused before encoding starts, with the smallest size that works. The planner limits video bitrate to 1.5× the source bitrate when known, subject to the video bitrate floor.
-- On macOS, Compress mode now uses Apple VideoToolbox, with the CPU encoder as the fallback. Both paths were verified on Apple silicon during follow-up testing.
+- On macOS, Compress mode now uses Apple VideoToolbox, with the CPU encoder as the fallback. Both paths were verified on Apple silicon.
 
-### Follow-up fixes after the handoff
+### Preview, controls, and export fixes
 
 #### Window and controls
 
