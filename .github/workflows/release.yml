@@ -14,8 +14,29 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: subaroll-release
+  cancel-in-progress: false
+
 jobs:
+  check-update-version:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Ensure replacement builds can be updated
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern latest.json --dir "$RUNNER_TEMP" --clobber
+          node scripts/check-update-version.js "$RUNNER_TEMP/latest.json"
+
   publish:
+    needs: check-update-version
+    if: always() && (needs.check-update-version.result == 'success' || needs.check-update-version.result == 'skipped')
     name: ${{ matrix.name }}
     strategy:
       fail-fast: false

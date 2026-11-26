@@ -9,6 +9,7 @@ Subaroll v1.3 brings a redesigned workspace, automatic subtitle matching, and re
 
 ### Additional improvements
 
+- Fixed update detection for older v1.3 builds and prevented future replacement builds from reusing the same internal update version.
 - Refreshed the vertical workspace with rounded neutral controls. Burn and Compress controls switch together, with smoother slider dragging and less unused space. Encoder and codec menus show available choices.
 - Raised the compression target limit to 750 MB and added a 250 MB slider snap point.
 - Improved planning for multi-hour videos and stopped reserving audio bitrate for silent sources. The estimate shows the required minimum for small targets and can retain resolutions above 1080p when the budget supports them.
