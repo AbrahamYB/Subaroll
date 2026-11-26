@@ -100,27 +100,6 @@ button { color: inherit; }
 }
 .empty-preview button:hover { color: var(--accent); border-color: var(--accent); }
 
-.guide-toggle {
-  min-height: 28px; padding: 0 6px; border: 1px solid var(--rule); border-radius: 3px;
-  background: transparent; color: var(--pale); font-size: 11px; white-space: nowrap; cursor: pointer;
-}
-.guide-toggle:disabled { opacity: .5; cursor: default; }
-.guide-toggle[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
-.position-guide { position: absolute; pointer-events: none; }
-.guide-line {
-  position: absolute; top: clamp(10px, var(--guide-y), calc(100% - 10px)); left: 0; right: 0; height: 20px;
-  transform: translateY(-50%); cursor: ns-resize; pointer-events: auto; touch-action: none;
-}
-.guide-line::before {
-  content: ""; position: absolute; inset: 9px 0 auto; height: 1px;
-  background: var(--accent); box-shadow: 0 1px 1px #000;
-}
-.guide-line span {
-  position: absolute; top: 0; right: 8px; min-width: 36px; padding: 3px 5px;
-  border: 1px solid var(--accent); border-radius: 2px; background: var(--well);
-  color: var(--accent-bright); font: 500 10px / 1.2 var(--mono); text-align: center; user-select: none;
-}
-
 .spinner {
   position: absolute; width: 30px; height: 30px; border-radius: 50%;
   border: 2px solid var(--meter); border-top-color: var(--accent);
@@ -397,7 +376,6 @@ button:focus-visible, select:focus-visible, #seek:focus-visible, .val-edit input
   color: var(--text);
   font-size: 11px;
 }
-.guide-toggle { border-radius: 999px; padding-inline: 9px; }
 .ns .tr { height: 5px; top: 9px; border-radius: 999px; }
 .ns .fl { border-radius: inherit; }
 .ns .th {
@@ -467,10 +445,6 @@ button:focus-visible, select:focus-visible, #seek:focus-visible, .val-edit input
 .input-files { display: flex; gap: 7px; min-width: 0; }
 .input-files .file-picker { flex: 1 1 0; }
 .input-files .file-picker:only-of-type { flex: 1 1 100%; }
-.preview-slot > .guide-toggle {
-  position: absolute; z-index: 4; right: 10px; bottom: 10px;
-  background: rgba(20, 20, 22, .75);
-}
 .preview-slot .status-row { right: 10px; }
 @media (max-width: 680px) {
   .input-files { gap: 5px; }

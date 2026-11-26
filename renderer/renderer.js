@@ -5,7 +5,6 @@ const state = {
   mode: 'subtitles', exporting: false, previewTimer: null, previewRequest: 0, previewBusy: false, previewPending: null, previewDirty: false, previewFrameUrl: null, videoEncoder: '', platform: '', availableVideoEncoders: [], availableAv1Encoders: [], subtitleTiming: null, subtitleWarning: '',
   availableUpdate: null, updateBusy: false, autoVideoEncoder10bit: '',
   appleBurnAvailable: false, toolsReady: false, preferredEncoder: 'auto', preferredCodec: 'auto',
-  guideOpen: false, renderedSubtitleFrame: null,
 };
 
 const $ = id => document.getElementById(id);
@@ -17,7 +16,6 @@ const elements = {
   quality: $('quality'), qualityValue: $('qualityValue'), qualityHint: $('qualityHint'),
   windowsEncoder: $('windowsEncoder'),
   previewStage: $('previewStage'), previewFrame: $('previewFrame'), previewSpinner: $('previewSpinner'),
-  positionGuide: $('positionGuide'), positionGuideToggle: $('positionGuideToggle'), guideValue: $('guideValue'),
   exportButton: $('exportButton'), testButton: $('testButton'), cancelButton: $('cancelButton'), progressWrap: $('progressWrap'),
   progressValue: $('progressValue'), progressBar: $('progressBar'), status: $('status'),
   subtitleMode: $('subtitleMode'), compressMode: $('compressMode'),
@@ -296,31 +294,6 @@ async function installAvailableUpdate() {
 function displayPosition() {
   const value = Number(elements.position.value);
   elements.positionValue.textContent = value === 0 ? 'Top' : value === 50 ? 'Middle' : value === 100 ? 'Bottom' : `${value}% from top`;
-  elements.positionGuide.style.setProperty('--guide-y', `${value}%`);
-  elements.guideValue.textContent = `${value}%`;
-}
-
-function refreshPositionGuide() {
-  const { positionGuide, positionGuideToggle, previewStage } = elements;
-  const frame = state.renderedSubtitleFrame;
-  const available = state.mode === 'subtitles' && !state.exporting &&
-    frame?.path === state.subtitlePath && previewStage.classList.contains('has-image');
-  positionGuideToggle.disabled = !available;
-  const visible = available && state.guideOpen;
-  positionGuideToggle.setAttribute('aria-pressed', String(visible));
-  positionGuide.hidden = !visible;
-  if (!visible) return;
-
-  // Match object-fit: contain so the guide uses the rendered frame, including any subtitle
-  // padding, and excludes the monitor's letterboxing.
-  const scale = Math.min(previewStage.clientWidth / frame.width, previewStage.clientHeight / frame.height);
-  const width = frame.width * scale;
-  const height = frame.height * scale;
-  Object.assign(positionGuide.style, {
-    width: `${width}px`, height: `${height}px`,
-    left: `${(previewStage.clientWidth - width) / 2}px`,
-    top: `${(previewStage.clientHeight - height) / 2}px`,
-  });
 }
 
 // Fixed-size window: nothing to fit, only hide landmark labels that would collide.
@@ -333,7 +306,6 @@ function refreshReady() {
   elements.testButton.disabled = state.exporting || !hasRequired;
   elements.subtitleMode.disabled = state.exporting;
   elements.compressMode.disabled = state.exporting;
-  refreshPositionGuide();
 }
 function subtitleFilenameToken() {
   const position = Math.max(0, Math.min(100, Number(elements.position.value))) / 100;
@@ -433,7 +405,6 @@ async function setVideo(videoPath) {
   elements.previewStage.classList.remove('has-image');
   releasePreviewFrame();
   state.previewDirty = false;
-  state.renderedSubtitleFrame = null;
   elements.previewSpinner.hidden = true;
   elements.seek.disabled = true;
   elements.seek.classList.remove('preview-loaded');
@@ -507,7 +478,6 @@ async function setSubtitle(subtitlePath, auto = false) {
     state.previewPending = null;
   }
   state.subtitlePath = subtitlePath;
-  refreshPositionGuide();
   elements.subtitleName.textContent = basename(subtitlePath);
   const timing = await api.inspectSubtitle(subtitlePath).catch(() => null);
   if (state.subtitlePath !== subtitlePath) return;
@@ -561,10 +531,6 @@ async function renderPreview(reportStatus) {
       elements.seek.disabled = false;
       elements.seek.classList.add('preview-loaded');
     }
-    const { naturalWidth: width, naturalHeight: height } = elements.previewFrame;
-    state.renderedSubtitleFrame = subtitlePath && !result.subtitleError && width && height
-      ? { path: subtitlePath, width, height } : null;
-    refreshPositionGuide();
     if (!reportStatus) return;
     if (result.subtitleError) setStatus(`Subtitle preview unavailable: ${result.subtitleError}`, 'error');
     else if (subtitlePath && state.subtitleWarning) setStatus(state.subtitleWarning, 'error');
@@ -575,8 +541,6 @@ async function renderPreview(reportStatus) {
       elements.previewStage.classList.remove('has-image');
       elements.seek.disabled = true;
       elements.seek.classList.remove('preview-loaded');
-      state.renderedSubtitleFrame = null;
-      refreshPositionGuide();
     }
     if (reportStatus) setStatus(String(error), 'error');
   } finally {
@@ -617,33 +581,6 @@ elements.position.addEventListener('input', () => {
   saveSubtitleSettings();
   updateAutomaticOutput();
   schedulePreview();
-});
-elements.positionGuideToggle.addEventListener('click', () => {
-  state.guideOpen = !state.guideOpen;
-  refreshPositionGuide();
-});
-new ResizeObserver(refreshPositionGuide).observe(elements.previewStage);
-const guideLine = elements.positionGuide.querySelector('.guide-line');
-let guideDrag = null;
-guideLine.addEventListener('pointerdown', event => {
-  const height = elements.positionGuide.getBoundingClientRect().height;
-  if (event.button !== 0 || guideDrag || !height) return;
-  guideLine.setPointerCapture(event.pointerId);
-  guideDrag = { id: event.pointerId, y: event.clientY, value: Number(elements.position.value), height };
-  event.preventDefault();
-});
-guideLine.addEventListener('pointermove', event => {
-  if (guideDrag?.id !== event.pointerId) return;
-  const next = guideDrag.value + (event.clientY - guideDrag.y) / guideDrag.height * 100;
-  elements.position.value = String(Math.max(0, Math.min(100, Math.round(next))));
-  elements.position.refreshSlider();
-  displayPosition();
-});
-guideLine.addEventListener('lostpointercapture', event => {
-  if (guideDrag?.id !== event.pointerId) return;
-  const previous = guideDrag.value;
-  guideDrag = null;
-  if (Number(elements.position.value) !== previous) elements.position.dispatchEvent(new Event('input'));
 });
 elements.scale.addEventListener('input', () => { elements.scaleValue.textContent = `${elements.scale.value}%`; saveSubtitleSettings(); updateAutomaticOutput(); schedulePreview(); });
 elements.quality.addEventListener('input', () => {
