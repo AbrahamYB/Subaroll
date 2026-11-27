@@ -2,6 +2,8 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+use tauri::Manager;
 use std::{
     collections::HashSet,
     fs,
@@ -416,6 +418,12 @@ fn find_tools(custom: Option<String>) -> Option<Tools> {
         std::env::var("SUBAROLL_FFMPEG").or_else(|_| std::env::var("SUBTITLE_BURNER_FFMPEG"))
     {
         candidates.push(value);
+    }
+    #[cfg(target_os = "macos")]
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(directory) = executable.parent() {
+            candidates.push(directory.join("ffmpeg").to_string_lossy().into_owned());
+        }
     }
     #[cfg(target_os = "macos")]
     candidates.extend(
@@ -2982,8 +2990,188 @@ pub fn reveal_output(output_path: String) -> Result<(), String> {
     Ok(())
 }
 
+const REDUX_SHA256: &str = "574614b9a4d9f72ab202877a7ad6a1f4bf819dd1d27b9d42dfe8cd429fcebdd5";
+const REDUX_SIZE: u64 = 213_319_296;
+const REDUX_URL: &str = "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/68f808a5903a0bf12657bca3a2a669d573abfb58/redux-packed.gguf";
+
+#[tauri::command]
+pub fn choose_generated_subtitle(video_path: String) -> String {
+    let path = Path::new(&video_path);
+    let mut dialog = rfd::FileDialog::new().set_title("Save generated subtitles").add_filter("SubRip subtitles", &["srt"]);
+    if let Some(parent) = path.parent() { dialog = dialog.set_directory(parent); }
+    let name = format!("{}.srt", path.file_stem().unwrap_or_default().to_string_lossy());
+    dialog.set_file_name(name).save_file().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+// Like the media exporter, keep the child registered so Cancel and app shutdown reap it.
+fn generation_command(program: &str, args: &[String], active: &Mutex<ExportJob>, limit: usize) -> Result<Vec<u8>, String> {
+    let (stdout, stderr) = {
+        let mut job = active.lock().unwrap();
+        job.check_cancelled()?;
+        let mut command = background_command(program);
+        command.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        command.env("PARAKEET_DEVICE", "cpu");
+        let mut child = command.spawn().map_err(|e| format!("Could not start subtitle tool: {e}"))?;
+        let pipes = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
+        job.child = Some(child);
+        pipes
+    };
+    let stdout_reader = std::thread::spawn(move || read_capped(stdout, limit));
+    let stderr_reader = std::thread::spawn(move || read_capped(stderr, MAX_TOOL_OUTPUT_BYTES));
+    let status = loop {
+        let result = {
+            let mut job = active.lock().unwrap();
+            match job.child.as_mut().unwrap().try_wait() {
+                Ok(Some(status)) => { job.child.take(); Some(Ok(status)) },
+                Ok(None) => None,
+                Err(e) => { if let Some(mut child) = job.child.take() { let _ = child.kill(); let _ = child.wait(); } Some(Err(e)) },
+            }
+        };
+        if let Some(result) = result { break result; }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let (output, truncated) = stdout_reader.join().map_err(|_| "Subtitle tool output failed")?;
+    let (errors, _) = stderr_reader.join().map_err(|_| "Subtitle tool error output failed")?;
+    active.lock().unwrap().check_cancelled()?;
+    if !status.map_err(|e| e.to_string())?.success() {
+        return Err(format!("Subtitle generation failed: {}", last_lines(&String::from_utf8_lossy(&errors))));
+    }
+    if truncated { return Err("Subtitle tool output was too large.".into()); }
+    Ok(output)
+}
+
+fn verify_redux(path: &Path, active: &Mutex<ExportJob>) -> Result<bool, String> {
+    if fs::metadata(path).map(|m| m.len()).ok() != Some(REDUX_SIZE) { return Ok(false); }
+    let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut hash = Sha256::new();
+    let mut buf = [0u8; 1024 * 1024];
+    loop {
+        active.lock().unwrap().check_cancelled()?;
+        let count = file.read(&mut buf).map_err(|e| e.to_string())?;
+        if count == 0 { break; }
+        hash.update(&buf[..count]);
+    }
+    Ok(format!("{:x}", hash.finalize()) == REDUX_SHA256)
+}
+
+fn redux_model(cache: &Path, active: &Mutex<ExportJob>) -> Result<PathBuf, String> {
+    fs::create_dir_all(cache).map_err(|e| format!("Cannot create subtitle model folder: {e}"))?;
+    let target = cache.join("parakeet-redux-574614b9.gguf");
+    if verify_redux(&target, active)? { return Ok(target); }
+    let partial = tempfile::Builder::new().prefix("redux-download-").tempfile_in(cache).map_err(|e| e.to_string())?;
+    let path = partial.path().to_string_lossy().into_owned();
+    let curl = if cfg!(windows) { "curl.exe" } else { "/usr/bin/curl" };
+    let args = ["--fail", "--location", "--silent", "--show-error", "--proto", "=https", "--proto-redir", "=https", "--max-filesize", "213319296", "--connect-timeout", "30", "--output", &path, REDUX_URL].map(str::to_owned);
+    generation_command(curl, &args, active, 1024)?;
+    if !verify_redux(partial.path(), active)? { return Err("The downloaded subtitle model failed its integrity check.".into()); }
+    if target.exists() { fs::remove_file(&target).map_err(|e| e.to_string())?; }
+    partial.persist(&target).map_err(|e| format!("Could not save the subtitle model: {e}"))?;
+    Ok(target)
+}
+
+fn srt_clock(seconds: f64) -> String {
+    let millis = (seconds.max(0.0) * 1000.0).round() as u64;
+    format!("{:02}:{:02}:{:02},{:03}", millis / 3_600_000, (millis / 60_000) % 60, (millis / 1000) % 60, millis % 1000)
+}
+
+#[derive(Clone)]
+struct SubtitleWord { text: String, start: f64, end: f64 }
+fn words_to_srt(words: &[SubtitleWord]) -> String {
+    let mut out = String::new();
+    let mut block: Vec<&SubtitleWord> = Vec::new();
+    let mut number = 0;
+    let flush = |block: &mut Vec<&SubtitleWord>, out: &mut String, number: &mut usize| {
+        if block.is_empty() { return; }
+        *number += 1;
+        let start = block[0].start;
+        let end = block.last().unwrap().end.max(start + 0.2);
+        let text = block.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+        out.push_str(&format!("{}\n{} --> {}\n{}\n\n", number, srt_clock(start), srt_clock(end), text));
+        block.clear();
+    };
+    for word in words {
+        let length: usize = block.iter().map(|w| w.text.chars().count() + 1).sum();
+        let end_sentence = block.last().is_some_and(|w| w.text.ends_with(['.', '?', '!']));
+        if !block.is_empty() && (word.start - block[0].start >= 5.0 || word.start - block.last().unwrap().end > 1.0 || length + word.text.chars().count() > 76 || end_sentence) {
+            flush(&mut block, &mut out, &mut number);
+        }
+        block.push(word);
+    }
+    flush(&mut block, &mut out, &mut number);
+    out
+}
+
+#[tauri::command]
+pub async fn generate_subtitles(window: WebviewWindow, state: State<'_, AppState>, video_path: String, output_path: String, audio_index: usize) -> Result<String, String> {
+    let guard = reserve_job(&state)?;
+    let tools = tools_for(&state)?;
+    let active = state.export.clone();
+    let cache = window.app_handle().path().app_cache_dir().map_err(|e| e.to_string())?.join("models");
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let engine = exe.parent().ok_or("Cannot locate subtitle engine")?.join(if cfg!(windows) { "subaroll-asr.exe" } else { "subaroll-asr" });
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = guard;
+        if !engine.is_file() { return Err("Subtitle generation engine is missing from this build.".into()); }
+        if Path::new(&output_path).extension().and_then(|s| s.to_str()).map(|s| !s.eq_ignore_ascii_case("srt")).unwrap_or(true) { return Err("Save generated subtitles as an .srt file.".into()); }
+        let metadata = probe_media(&tools.ffprobe, &video_path)?;
+        if audio_index >= metadata.audio_streams.len() { return Err("The selected audio track is unavailable.".into()); }
+        if !metadata.duration.is_finite() || metadata.duration <= 0.0 { return Err("Could not determine the video duration.".into()); }
+        let _ = window.emit("generation-phase", "Checking subtitle model…");
+        let model = redux_model(&cache, &active)?;
+        let staging = StagedOutput::new(&output_path, &video_path)?;
+        let scratch = tempfile::Builder::new().prefix("subaroll-asr-").tempdir().map_err(|e| e.to_string())?;
+        let mut words: Vec<SubtitleWord> = Vec::new();
+        let mut offset = 0.0;
+        const CHUNK: f64 = 120.0;
+        while offset < metadata.duration {
+            active.lock().unwrap().check_cancelled()?;
+            let length = CHUNK.min(metadata.duration - offset);
+            let start = (offset - 3.0).max(0.0);
+            let stop = (offset + length + 3.0).min(metadata.duration);
+            let audio = scratch.path().join("audio.wav");
+            let _ = window.emit("generation-phase", "Preparing audio…");
+            let args = vec!["-v".into(), "error".into(), "-y".into(), "-ss".into(), format!("{start:.3}"), "-i".into(), video_path.clone(), "-t".into(), format!("{:.3}", stop - start), "-map".into(), format!("0:a:{audio_index}"), "-vn".into(), "-ac".into(), "1".into(), "-ar".into(), "16000".into(), "-c:a".into(), "pcm_s16le".into(), audio.to_string_lossy().into_owned()];
+            generation_command(&tools.ffmpeg, &args, &active, 1024)?;
+            let _ = window.emit("generation-phase", "Generating subtitles…");
+            let threads = std::thread::available_parallelism().map(|n| n.get().saturating_sub(1).clamp(1, 4)).unwrap_or(2);
+            let args = vec!["transcribe".into(), "--model".into(), model.to_string_lossy().into_owned(), "--input".into(), audio.to_string_lossy().into_owned(), "--threads".into(), threads.to_string(), "--timestamps".into(), "--json".into(), "--vad".into()];
+            let result = generation_command(&engine.to_string_lossy(), &args, &active, MAX_TOOL_OUTPUT_BYTES)?;
+            let data: Value = serde_json::from_slice(&result).map_err(|e| format!("Invalid subtitle engine output: {e}"))?;
+            let items = data["words"].as_array().ok_or("The subtitle engine returned no word timings.")?;
+            for item in items {
+                let Some(text) = item["w"].as_str() else { continue };
+                let (Some(begin), Some(end)) = (item["start"].as_f64(), item["end"].as_f64()) else { continue };
+                let begin = start + begin; let end = (start + end).min(metadata.duration);
+                let midpoint = (begin + end) / 2.0;
+                if midpoint < offset || midpoint >= offset + length || !begin.is_finite() || !end.is_finite() || end <= begin || text.trim().is_empty() { continue; }
+                words.push(SubtitleWord { text: text.trim().to_owned(), start: begin, end });
+            }
+            offset += length;
+            let _ = window.emit("export-progress", offset / metadata.duration);
+        }
+        if words.is_empty() { return Err("No speech was detected in the selected audio track.".into()); }
+        let content = words_to_srt(&words);
+        if content.len() as u64 > MAX_SUBTITLE_BYTES { return Err("Generated subtitles exceed the 16 MiB limit.".into()); }
+        fs::write(&staging.path, content).map_err(|e| format!("Could not write generated subtitles: {e}"))?;
+        staging.commit(&output_path, &active)?;
+        Ok(output_path)
+    }).await.map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn generated_subtitles_include_ordered_timed_cues() {
+        use super::{words_to_srt, SubtitleWord};
+        let words = vec![
+            SubtitleWord { text: "Hola".into(), start: 1.1, end: 1.4 },
+            SubtitleWord { text: "mundo.".into(), start: 1.4, end: 2.0 },
+            SubtitleWord { text: "Siguiente".into(), start: 4.0, end: 4.5 },
+        ];
+        let result = words_to_srt(&words);
+        assert_eq!(result, "1\n00:00:01,100 --> 00:00:02,000\nHola mundo.\n\n2\n00:00:04,000 --> 00:00:04,500\nSiguiente\n\n");
+    }
+
     use super::*;
 
     #[test]

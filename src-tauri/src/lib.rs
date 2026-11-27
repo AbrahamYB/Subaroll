@@ -62,6 +62,8 @@ pub fn run() {
             media::choose_output,
             media::find_subtitle,
             media::discover_subtitles,
+            media::choose_generated_subtitle,
+            media::generate_subtitles,
             media::extract_subtitle,
             media::probe,
             media::inspect_subtitle,

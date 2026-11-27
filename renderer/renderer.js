@@ -2,7 +2,7 @@ const api = window.subaroll;
 document.documentElement.classList.toggle('platform-windows', /Windows/.test(navigator.userAgent));
 const state = {
   videoPath: '', subtitlePath: '', outputPath: '', metadata: null,
-  mode: 'subtitles', exporting: false, previewTimer: null, previewRequest: 0, previewBusy: false, previewPending: null, previewDirty: false, previewFrameUrl: null, videoEncoder: '', platform: '', availableVideoEncoders: [], availableAv1Encoders: [], subtitleTiming: null, subtitleWarning: '',
+  mode: 'subtitles', exporting: false, generating: false, subtitleDiscoveryDone: false, previewTimer: null, previewRequest: 0, previewBusy: false, previewPending: null, previewDirty: false, previewFrameUrl: null, videoEncoder: '', platform: '', availableVideoEncoders: [], availableAv1Encoders: [], subtitleTiming: null, subtitleWarning: '',
   availableUpdate: null, updateBusy: false, autoVideoEncoder10bit: '',
   appleBurnAvailable: false, toolsReady: false, preferredEncoder: 'auto', preferredCodec: 'auto', subtitleTracks: [], subtitleTrackRequest: 0, subtitleTrackBusy: false, activeSubtitleTrack: null,
 };
@@ -22,8 +22,18 @@ function resizeLanguagePicker() {
     + parseFloat(styles.borderLeftWidth) + parseFloat(styles.borderRightWidth)
     + (parseFloat(styles.columnGap) || 0) + arrow.offsetWidth
     + (parseFloat(getComputedStyle(arrow).marginRight) || 0);
-  const maxWidth = Math.max(70, picker.parentElement.clientWidth - 210);
-  picker.style.setProperty('--language-picker-width', `${Math.min(maxWidth, Math.max(70, Math.ceil(textWidth + extra + 2)))}px`);
+  const maxWidth = Math.max(0, picker.parentElement.clientWidth - 110);
+  picker.style.setProperty('--language-picker-width', `${Math.min(maxWidth, Math.ceil(textWidth + extra + 2))}px`);
+}
+function resizeGeneratePicker() {
+  const picker = $('generateSubtitleContainer');
+  const button = $('generateSubtitleButton');
+  const styles = getComputedStyle(button);
+  const font = getComputedStyle(button.querySelector('span'));
+  const context = document.createElement('canvas').getContext('2d');
+  context.font = font.font;
+  const width = context.measureText(button.textContent.trim()).width + parseFloat(styles.paddingLeft) + parseFloat(styles.paddingRight) + parseFloat(styles.borderLeftWidth) + parseFloat(styles.borderRightWidth) + 2;
+  picker.style.setProperty('--generate-picker-width', `${Math.min(Math.max(0, picker.parentElement.clientWidth - 110), Math.ceil(width))}px`);
 }
 function showLanguagePicker(show) {
   const picker = $('languagePickerDemo');
@@ -33,7 +43,8 @@ function showLanguagePicker(show) {
   picker.setAttribute('aria-hidden', String(!show));
 }
 window.addEventListener('resize', resizeLanguagePicker);
-document.fonts.ready.then(resizeLanguagePicker);
+window.addEventListener('resize', resizeGeneratePicker);
+document.fonts.ready.then(() => { resizeLanguagePicker(); resizeGeneratePicker(); });
 const elements = {
   videoPicker: $('videoPicker'), subtitlePicker: $('subtitlePicker'),
   videoName: $('videoName'), subtitleName: $('subtitleName'),
@@ -343,6 +354,16 @@ function displayPosition() {
 function fitWindowToContent() { declutterCaptions(); }
 
 function refreshReady() {
+  const generate = $('generateSubtitleButton');
+  const showGenerate = state.mode === 'subtitles' && state.subtitleDiscoveryDone && !!state.metadata?.audioStreams?.length && state.subtitleTracks.length === 0 && !state.subtitlePath;
+  const generatePicker = $('generateSubtitleContainer');
+  if (showGenerate) resizeGeneratePicker();
+  generatePicker.classList.toggle('is-visible', showGenerate);
+  generatePicker.inert = !showGenerate;
+  generatePicker.setAttribute('aria-hidden', String(!showGenerate));
+  generate.disabled = state.exporting;
+  elements.videoPicker.disabled = state.generating;
+  elements.subtitlePicker.disabled = state.generating;
   const hasRequired = state.videoPath && state.outputPath && state.metadata &&
     (state.mode === 'compress' || (state.subtitlePath && !state.subtitleTrackBusy));
   elements.exportButton.disabled = state.exporting || !hasRequired;
@@ -444,7 +465,8 @@ async function checkTools() {
 }
 
 async function setVideo(videoPath) {
-  if (!videoPath) return;
+  if (!videoPath || state.generating) return;
+  state.subtitleDiscoveryDone = false;
   state.subtitleTrackRequest++;
   state.subtitleTrackBusy = false;
   state.subtitleTracks = [];
@@ -477,7 +499,6 @@ async function setVideo(videoPath) {
     if (Number.isFinite(sourceFps) && sourceFps > 0) {
       elements.estFps.textContent = `${Number(sourceFps.toFixed(3))} fps`;
     }
-    const canvas = previewCanvas(state.metadata);
     elements.seek.max = String(state.metadata.duration || 0);
     elements.seek.value = String(Math.min(30, Math.max(0, (state.metadata.duration || 0) * .08)));
     elements.seekDuration.textContent = formatTime(state.metadata.duration);
@@ -485,13 +506,7 @@ async function setVideo(videoPath) {
     updateAutomaticOutput();
     updateEstimate();
     updateSubtitleWarning();
-    if (state.metadata.isHdr) {
-      setStatus(`${state.metadata.width}×${state.metadata.height}${canvas.padded ? ` → ${canvas.width}×${canvas.height} with automatic lower subtitle area` : ''} • ${formatTime(state.metadata.duration)} • ${state.metadata.dolbyVision ? 'Dolby Vision → HDR10' : 'HDR10'} • 10-bit`);
-    } else if (state.metadata.bitDepth > 8) {
-      setStatus(`${state.metadata.width}×${state.metadata.height}${canvas.padded ? ` → ${canvas.width}×${canvas.height} with automatic lower subtitle area` : ''} • ${formatTime(state.metadata.duration)} • 10-bit SDR preserved`);
-    } else {
-      setStatus(`${state.metadata.width}×${state.metadata.height} • ${formatTime(state.metadata.duration)} • ${state.metadata.codec.toUpperCase()} • 8-bit source`);
-    }
+    setStatus('');
     if (state.subtitleWarning) setStatus(state.subtitleWarning, 'error');
     schedulePreview();
   } catch (error) {
@@ -559,6 +574,8 @@ async function loadSubtitleTracks(videoPath) {
   }
   if (request !== state.subtitleTrackRequest || state.videoPath !== videoPath) return;
   state.subtitleTracks = tracks.map(track => ({ ...track, displayLanguage: trackLanguage(track, videoPath) }));
+  state.subtitleDiscoveryDone = true;
+  refreshReady();
   const select = $('languagePickerDemo').querySelector('select');
   select.replaceChildren();
   state.subtitleTracks.forEach((track, index) => {
@@ -713,7 +730,7 @@ const sliderCaptions = [...document.querySelectorAll('.slider')].map(enhanceSlid
 
 elements.videoPicker.addEventListener('click', async () => setVideo(await api.chooseVideo()));
 $('emptyVideoPicker').addEventListener('click', () => elements.videoPicker.click());
-elements.subtitlePicker.addEventListener('click', async () => setSubtitle(await api.chooseSubtitle()));
+elements.subtitlePicker.addEventListener('click', async () => { if (!state.generating) await setSubtitle(await api.chooseSubtitle()); });
 
 elements.delay.addEventListener('input', () => { elements.delayValue.textContent = `${Number(elements.delay.value).toFixed(2)} s`; saveSubtitleSettings(); updateAutomaticOutput(); schedulePreview(); });
 elements.position.addEventListener('input', () => {
@@ -944,6 +961,38 @@ async function startBurn(isTest = false) {
     finishExport();
   }
 }
+$('generateSubtitleButton').addEventListener('click', () => {
+  if (state.exporting || !state.metadata?.audioStreams?.length) return;
+  const select = $('generateAudio');
+  select.replaceChildren();
+  state.metadata.audioStreams.forEach((stream, index) => {
+    const label = subtitleLanguages.recognized(stream.language) || (stream.language && stream.language !== 'und' ? stream.language : 'Unknown language');
+    select.add(new Option(`Track ${index + 1} · ${label}${stream.channels ? ` · ${stream.channels} ${stream.channels === 1 ? 'channel' : 'channels'}` : ''}`, String(index)));
+  });
+  $('generateDialog').showModal();
+});
+$('generateDialog').addEventListener('close', async () => {
+  if ($('generateDialog').returnValue !== 'generate' || state.exporting || !state.videoPath) return;
+  const video = state.videoPath;
+  const index = Number($('generateAudio').value);
+  const output = await api.chooseGeneratedSubtitle(video);
+  if (!output || video !== state.videoPath) return;
+  state.generating = true;
+  beginExport();
+  setStatus('Checking subtitle model…');
+  try {
+    const path = await api.generateSubtitles(video, output, index);
+    await setSubtitle(path, true);
+    setStatus('');
+  } catch (error) {
+    const message = String(error);
+    setStatus(message.includes('cancelled') ? 'Subtitle generation cancelled.' : message, message.includes('cancelled') ? '' : 'error');
+  } finally {
+    state.generating = false;
+    finishExport();
+  }
+});
+api.onGenerationPhase(message => { if (state.generating) setStatus(message); });
 elements.testButton.addEventListener('click', () => state.mode === 'compress' ? startCompression(true) : startBurn(true));
 elements.exportButton.addEventListener('click', () => state.mode === 'compress' ? startCompression() : startBurn(false));
 elements.cancelButton.addEventListener('click', () => api.cancelExport());

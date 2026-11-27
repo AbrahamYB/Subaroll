@@ -28,9 +28,6 @@
             </div>
             <div id="previewSpinner" class="spinner" role="status" aria-label="Rendering preview" hidden></div>
           </div>
-          <div class="status-row">
-            <p id="status" class="status"></p>
-          </div>
         </div>
         <div class="seek-row">
           <span id="seekCurrent">00:00</span>
@@ -44,13 +41,16 @@
           <div class="input-files">
             <label id="videoLabel" class="sr-only" for="videoPicker">Video</label>
             <button id="videoPicker" class="file-picker" type="button" aria-labelledby="videoLabel videoName"><span id="videoName">Choose video…</span><b>Browse</b></button>
+            <div class="subtitle-input-group subtitle-only">
             <label id="subtitleLabel" class="sr-only subtitle-only" for="subtitlePicker">Subtitles</label>
             <button id="subtitlePicker" class="file-picker subtitle-only" type="button" aria-labelledby="subtitleLabel subtitleName"><span id="subtitleName">Choose subtitles…</span><b>Browse</b></button>
+            <div id="generateSubtitleContainer" class="generate-picker" inert aria-hidden="true"><button id="generateSubtitleButton" class="file-picker generate-subtitles" type="button"><span>Generate…</span></button></div>
             <div id="languagePickerDemo" class="language-picker-demo subtitle-only" inert aria-hidden="true">
               <div class="file-picker language-picker-control">
                 <span id="languagePickerDemoValue"></span><i class="language-picker-arrow" aria-hidden="true"></i>
                 <select aria-label="Subtitle language"></select>
               </div>
+            </div>
             </div>
           </div>
           <section class="adjustments subtitle-only" aria-label="Subtitle adjustments">
@@ -124,12 +124,23 @@
               <button id="testButton" class="secondary test-button" type="button" disabled>30s test</button>
               <button id="exportButton" class="primary" type="button" disabled>Burn subtitles</button>
             </div>
+            <div class="status-row"><p id="status" class="status" aria-live="polite"></p></div>
           </div>
         </section>
 
       </section>
     </div>
   </main>
+  <dialog id="generateDialog" class="generate-dialog" aria-labelledby="generateTitle">
+    <form method="dialog">
+      <h2 id="generateTitle">Generate subtitles</h2>
+      <p>Transcribe speech locally with Parakeet Redux. The model downloads once (213 MB).</p>
+      <label for="generateAudio">Audio track</label>
+      <select id="generateAudio"></select>
+      <p>Speech is transcribed in its original language. Review the result for mistakes.</p>
+      <div class="generate-actions"><button value="cancel" class="secondary">Cancel</button><button value="generate" class="primary">Continue</button></div>
+    </form>
+  </dialog>
   <script src="tauri-api.js"></script>
   <script src="languages.js"></script>
   <script src="renderer.js"></script>

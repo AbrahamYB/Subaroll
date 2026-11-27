@@ -2,9 +2,10 @@
 
 Release history for Subaroll. Public releases use the `major.minor` format (`v1.0`, `v1.1`, `v1.2`).
 
-## Planned
+## Unreleased
 
-- Automatic subtitles for videos in English and Spanish.
+- Bundled FFmpeg and FFprobe on macOS and removed the Windows offline WebView2 installer to reduce downloads.
+- Added on-device multilingual subtitle generation using the optional Parakeet Redux model when no subtitle tracks are available.
 
 ## v1.3
 
