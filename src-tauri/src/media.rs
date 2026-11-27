@@ -2989,7 +2989,11 @@ mod tests {
     #[test]
     #[ignore = "requires FFmpeg and FFprobe"]
     fn real_subtitle_tracks_discover_and_extract() {
-        let tools = tools_for(&AppState::default()).unwrap();
+        let ffmpeg = std::env::var("SUBAROLL_FFMPEG").unwrap_or_else(|_| {
+            if cfg!(target_os = "macos") { "/opt/homebrew/bin/ffmpeg".into() } else { "ffmpeg".into() }
+        });
+        let ffprobe = Path::new(&ffmpeg).with_file_name(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" }).to_string_lossy().into_owned();
+        let tools = Tools { ffmpeg, ffprobe, video_encoder: String::new() };
         let dir = tempfile::tempdir().unwrap();
         let en = dir.path().join("english.srt");
         let es = dir.path().join("spanish.srt");
