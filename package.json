@@ -7,8 +7,8 @@
   "scripts": {
     "start": "node scripts/run-tauri.js dev",
     "test": "node scripts/run-cargo.js test --manifest-path src-tauri/Cargo.toml",
-    "build:mac": "node scripts/run-tauri.js build --bundles app",
-    "build:win": "node scripts/run-tauri.js build --bundles nsis",
+    "build:mac": "python3 scripts/prepare-macos-ffmpeg.py && python3 scripts/prepare-subtitle-engine.py && node scripts/run-tauri.js build --bundles app --config src-tauri/tauri.release.macos.json",
+    "build:win": "npm run prepare:ffmpeg:win && python scripts/prepare-subtitle-engine.py && node scripts/run-tauri.js build --bundles nsis --config src-tauri/tauri.release.windows.json",
     "prepare:ffmpeg:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-windows-ffmpeg.ps1",
     "update:installed:mac": "./scripts/update-installed-mac.sh"
   },

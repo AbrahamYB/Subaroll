@@ -76,10 +76,21 @@ jobs:
         shell: powershell
         run: npm run prepare:ffmpeg:win
 
-      - name: Provide FFmpeg for macOS tests
+      - name: Prepare bundled FFmpeg for macOS
         if: runner.os == 'macOS'
         shell: bash
-        run: command -v ffmpeg >/dev/null || brew install ffmpeg
+        run: |
+          python3 scripts/prepare-macos-ffmpeg.py
+
+      - name: Prepare subtitle engine on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: python3 scripts/prepare-subtitle-engine.py
+
+      - name: Prepare subtitle engine on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python scripts/prepare-subtitle-engine.py
 
       - name: Run automated tests
         run: npm test
@@ -98,7 +109,13 @@ jobs:
 
       - name: Test real subtitle track detection on macOS
         if: runner.os == 'macOS'
-        run: node scripts/run-cargo.js test --manifest-path src-tauri/Cargo.toml real_subtitle_tracks_discover_and_extract -- --ignored
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/subaroll-tools"
+          cp src-tauri/binaries/ffmpeg-aarch64-apple-darwin "$RUNNER_TEMP/subaroll-tools/ffmpeg"
+          cp src-tauri/binaries/ffprobe-aarch64-apple-darwin "$RUNNER_TEMP/subaroll-tools/ffprobe"
+          export SUBAROLL_FFMPEG="$RUNNER_TEMP/subaroll-tools/ffmpeg"
+          node scripts/run-cargo.js test --manifest-path src-tauri/Cargo.toml real_subtitle_tracks_discover_and_extract -- --ignored
 
       - name: Derive major.minor asset version from release tag
         id: release_version
