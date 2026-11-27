@@ -4,10 +4,36 @@ const state = {
   videoPath: '', subtitlePath: '', outputPath: '', metadata: null,
   mode: 'subtitles', exporting: false, previewTimer: null, previewRequest: 0, previewBusy: false, previewPending: null, previewDirty: false, previewFrameUrl: null, videoEncoder: '', platform: '', availableVideoEncoders: [], availableAv1Encoders: [], subtitleTiming: null, subtitleWarning: '',
   availableUpdate: null, updateBusy: false, autoVideoEncoder10bit: '',
-  appleBurnAvailable: false, toolsReady: false, preferredEncoder: 'auto', preferredCodec: 'auto',
+  appleBurnAvailable: false, toolsReady: false, preferredEncoder: 'auto', preferredCodec: 'auto', subtitleTracks: [], subtitleTrackRequest: 0, subtitleTrackBusy: false, activeSubtitleTrack: null,
 };
 
 const $ = id => document.getElementById(id);
+function resizeLanguagePicker() {
+  const picker = $('languagePickerDemo');
+  const label = $('languagePickerDemoValue');
+  const control = picker.querySelector('.language-picker-control');
+  const arrow = picker.querySelector('.language-picker-arrow');
+  const styles = getComputedStyle(control);
+  const font = getComputedStyle(label);
+  const context = document.createElement('canvas').getContext('2d');
+  context.font = font.font;
+  const textWidth = context.measureText(label.textContent).width;
+  const extra = parseFloat(styles.paddingLeft) + parseFloat(styles.paddingRight)
+    + parseFloat(styles.borderLeftWidth) + parseFloat(styles.borderRightWidth)
+    + (parseFloat(styles.columnGap) || 0) + arrow.offsetWidth
+    + (parseFloat(getComputedStyle(arrow).marginRight) || 0);
+  const maxWidth = Math.max(70, picker.parentElement.clientWidth - 210);
+  picker.style.setProperty('--language-picker-width', `${Math.min(maxWidth, Math.max(70, Math.ceil(textWidth + extra + 2)))}px`);
+}
+function showLanguagePicker(show) {
+  const picker = $('languagePickerDemo');
+  if (show) resizeLanguagePicker();
+  picker.classList.toggle('is-visible', show);
+  picker.inert = !show;
+  picker.setAttribute('aria-hidden', String(!show));
+}
+window.addEventListener('resize', resizeLanguagePicker);
+document.fonts.ready.then(resizeLanguagePicker);
 const elements = {
   videoPicker: $('videoPicker'), subtitlePicker: $('subtitlePicker'),
   videoName: $('videoName'), subtitleName: $('subtitleName'),
@@ -162,17 +188,34 @@ function restoreSubtitleSettings() {
   displayPosition();
   elements.scaleValue.textContent = `${elements.scale.value}%`;
 }
-function qualityDescription(value) {
-  if (value >= 96) return ['Maximum', 'Near-lossless hardware quality with a source-aware bitrate ceiling.'];
-  if (value >= 88) return ['Visually lossless', 'Hardware constant-quality mode with a ceiling derived from the source bitrate.'];
-  if (value >= 76) return ['High', 'Very good quality with a smaller output file.'];
-  return ['Compact', 'Smallest files; fine detail may be less crisp.'];
-}
+let qualityProfile = null;
+let qualityProfileRequest = 0;
+let qualityProfileTimer;
 function refreshQualityDisplay() {
-  const value = Number(elements.quality.value);
-  const [label, hint] = qualityDescription(value);
-  elements.qualityValue.textContent = `CQ ${value}`;
-  elements.qualityHint.textContent = `${label}. ${hint}`;
+  const index = Math.max(0, Math.min(40, Math.round(Number(elements.quality.value)) - 60));
+  elements.qualityValue.textContent = qualityProfile?.values[index] || '—';
+  elements.qualityHint.textContent = qualityProfile?.hint || 'Detecting encoder quality settings.';
+  elements.qualityValue.title = qualityProfile?.hint || '';
+}
+function scheduleQualityProfile() {
+  const request = ++qualityProfileRequest;
+  clearTimeout(qualityProfileTimer);
+  qualityProfile = null;
+  refreshQualityDisplay();
+  if (!state.toolsReady) return;
+  qualityProfileTimer = setTimeout(async () => {
+    try {
+      const result = await api.burnQualityProfile(state.metadata, settings());
+      if (request !== qualityProfileRequest) return;
+      qualityProfile = result;
+      refreshQualityDisplay();
+      updateAutomaticOutput();
+    } catch (error) {
+      if (request !== qualityProfileRequest) return;
+      elements.qualityHint.textContent = 'Could not determine encoder quality settings.';
+      console.warn('Could not determine encoder quality settings:', error);
+    }
+  }, 100);
 }
 const encoderLabels = {
   nvenc: 'NVIDIA NVENC', qsv: 'Intel Quick Sync', amf: 'AMD AMF',
@@ -301,7 +344,7 @@ function fitWindowToContent() { declutterCaptions(); }
 
 function refreshReady() {
   const hasRequired = state.videoPath && state.outputPath && state.metadata &&
-    (state.mode === 'compress' || state.subtitlePath);
+    (state.mode === 'compress' || (state.subtitlePath && !state.subtitleTrackBusy));
   elements.exportButton.disabled = state.exporting || !hasRequired;
   elements.testButton.disabled = state.exporting || !hasRequired;
   elements.subtitleMode.disabled = state.exporting;
@@ -312,7 +355,8 @@ function subtitleFilenameToken() {
   const delay = Number(elements.delay.value);
   const delayToken = `${delay < 0 ? 'm' : ''}${String(Math.round(Math.abs(delay) * 100)).padStart(3, '0')}`;
   const size = Math.max(0, Number(elements.scale.value)) / 1000;
-  return `pos${position.toFixed(2)} sub${delayToken} size${size.toFixed(3)} cq${Math.round(Number(elements.quality.value))}`;
+  const quality = elements.qualityValue.textContent.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'quality';
+  return `pos${position.toFixed(2)} sub${delayToken} size${size.toFixed(3)} ${quality}`;
 }
 function suggestOutput() {
   if (!state.videoPath) return '';
@@ -337,6 +381,7 @@ function setMode(mode) {
   elements.exportButton.textContent = compressing ? 'Compress video' : 'Burn subtitles';
   updateAutomaticOutput();
   refreshEncoderAvailability();
+  if (!compressing) scheduleQualityProfile();
   updateEstimate();
   setStatus('');
   refreshReady();
@@ -365,8 +410,8 @@ function refreshEncoderAvailability() {
   for (const key of ['nvenc', 'qsv', 'amf', 'videotoolbox', 'software']) {
     if (key === 'software' || available.has(key)) select.add(new Option(encoderLabels[key], key));
   }
-  select.value = [...select.options].some(option => option.value === state.preferredEncoder)
-    ? state.preferredEncoder : 'auto';
+  const selected = state.preferredEncoder;
+  select.value = [...select.options].some(option => option.value === selected) ? selected : 'auto';
   select.disabled = !state.toolsReady;
   refreshCodecOptions();
 }
@@ -393,12 +438,19 @@ async function checkTools() {
     setStatus(`Encoder detection failed: ${error}`, 'error');
   } finally {
     refreshEncoderAvailability();
+    scheduleQualityProfile();
     updateEstimate();
   }
 }
 
 async function setVideo(videoPath) {
   if (!videoPath) return;
+  state.subtitleTrackRequest++;
+  state.subtitleTrackBusy = false;
+  state.subtitleTracks = [];
+  state.activeSubtitleTrack = null;
+  showLanguagePicker(false);
+  if (state.subtitleAuto) { state.subtitlePath = ''; state.subtitleTiming = null; elements.subtitleName.textContent = 'Choose subtitles…'; }
   clearTimeout(state.previewTimer);
   state.previewRequest += 1;
   state.previewPending = null;
@@ -410,6 +462,7 @@ async function setVideo(videoPath) {
   elements.seek.classList.remove('preview-loaded');
   state.videoPath = videoPath;
   state.metadata = null;
+  scheduleQualityProfile();
   refreshReady();
   elements.estFps.textContent = '—';
   updateEstimate();
@@ -448,17 +501,96 @@ async function setVideo(videoPath) {
     setStatus(String(error), 'error');
   }
   if (state.mode === 'subtitles') refreshAutoLabels();
+  scheduleQualityProfile();
   refreshReady();
   fitWindowToContent();
-  // Auto-pick a matching subtitle, but never replace one the user chose by hand.
-  if (state.metadata && (!state.subtitlePath || state.subtitleAuto)) {
-    const found = await api.findSubtitle(videoPath).catch(() => '');
-    if (found && state.videoPath === videoPath && (!state.subtitlePath || state.subtitleAuto)) {
-      await setSubtitle(found, true);
-      if (!state.subtitleWarning) setStatus(`Matched subtitles: ${basename(found)}`);
+  if (state.metadata) await loadSubtitleTracks(videoPath);
+}
+
+function trackLanguage(track, videoPath) {
+  if (track.language) return subtitleLanguages.recognized(track.language);
+  if (!track.path) return null;
+  const videoStem = extless(videoPath).toLocaleLowerCase();
+  const stem = extless(track.path);
+  if (stem.toLocaleLowerCase() === videoStem) return null;
+  const suffix = stem.toLocaleLowerCase().startsWith(`${videoStem}.`) ? stem.slice(videoStem.length + 1) : stem;
+  const tokens = suffix.split(/[. _\-\[\]()]+/).filter(Boolean);
+  for (const token of tokens.slice(-4).reverse()) {
+    const found = subtitleLanguages.recognized(token);
+    if (found) return found;
+  }
+  return null;
+}
+
+async function chooseSubtitleTrack(index, videoPath) {
+  const track = state.subtitleTracks[index];
+  if (!track?.supported) return;
+  const request = ++state.subtitleTrackRequest;
+  state.subtitleTrackBusy = true;
+  refreshReady();
+  try {
+    const path = track.path || await api.extractSubtitle(videoPath, track.streamIndex);
+    if (request !== state.subtitleTrackRequest || state.videoPath !== videoPath) return;
+    await setSubtitle(path, true, track.label);
+    if (request !== state.subtitleTrackRequest || state.videoPath !== videoPath) return;
+    state.activeSubtitleTrack = index;
+    $('languagePickerDemoValue').textContent = track.displayLanguage || 'Unknown';
+    resizeLanguagePicker();
+  } catch (error) {
+    if (request === state.subtitleTrackRequest && state.videoPath === videoPath) {
+      const select = $('languagePickerDemo').querySelector('select');
+      select.selectedIndex = state.activeSubtitleTrack ?? -1;
+      $('languagePickerDemoValue').textContent = state.activeSubtitleTrack == null ? 'Language' : (state.subtitleTracks[state.activeSubtitleTrack]?.displayLanguage || 'Unknown');
+      resizeLanguagePicker();
+      setStatus(`Could not load subtitle track: ${error}`, 'error');
     }
+  } finally {
+    if (request === state.subtitleTrackRequest) { state.subtitleTrackBusy = false; refreshReady(); }
   }
 }
+
+async function loadSubtitleTracks(videoPath) {
+  const request = ++state.subtitleTrackRequest;
+  let tracks;
+  try { tracks = await api.discoverSubtitles(videoPath); }
+  catch (error) {
+    if (request === state.subtitleTrackRequest) setStatus(`Could not inspect subtitle tracks: ${error}`, 'error');
+    return;
+  }
+  if (request !== state.subtitleTrackRequest || state.videoPath !== videoPath) return;
+  state.subtitleTracks = tracks.map(track => ({ ...track, displayLanguage: trackLanguage(track, videoPath) }));
+  const select = $('languagePickerDemo').querySelector('select');
+  select.replaceChildren();
+  state.subtitleTracks.forEach((track, index) => {
+    const language = track.displayLanguage || 'Unknown language';
+    const source = track.path ? 'File' : 'Embedded';
+    track.label = [language, source, track.title, track.forced ? 'Forced' : '', track.supported ? '' : 'Image-based — unsupported'].filter(Boolean).join(' · ');
+    const option = new Option(track.label, String(index));
+    option.disabled = !track.supported;
+    select.add(option);
+  });
+  const languages = new Set(state.subtitleTracks.filter(track => track.supported && track.displayLanguage).map(track => track.displayLanguage));
+  const show = languages.size > 1;
+  const first = state.subtitleTracks.findIndex(track => track.supported && !track.forced);
+  const fallback = first >= 0 ? first : state.subtitleTracks.findIndex(track => track.supported);
+  if (fallback >= 0 && (!state.subtitlePath || state.subtitleAuto)) {
+    select.value = String(fallback);
+    $('languagePickerDemoValue').textContent = state.subtitleTracks[fallback].displayLanguage || 'Unknown';
+    showLanguagePicker(show);
+    await chooseSubtitleTrack(fallback, videoPath);
+  } else {
+    select.selectedIndex = -1;
+    $('languagePickerDemoValue').textContent = 'Language';
+    showLanguagePicker(show);
+  }
+}
+
+$('languagePickerDemo').querySelector('select').addEventListener('change', async event => {
+  const index = Number(event.target.value);
+  const track = state.subtitleTracks[index];
+  if (!track) return;
+  await chooseSubtitleTrack(index, state.videoPath);
+});
 
 function updateSubtitleWarning() {
   state.subtitleWarning = '';
@@ -469,8 +601,16 @@ function updateSubtitleWarning() {
   }
 }
 
-async function setSubtitle(subtitlePath, auto = false) {
+async function setSubtitle(subtitlePath, auto = false, displayName = '') {
   if (!subtitlePath) return;
+  if (!auto) {
+    state.subtitleTrackRequest++;
+    state.subtitleTrackBusy = false;
+    state.activeSubtitleTrack = null;
+    $('languagePickerDemo').querySelector('select').selectedIndex = -1;
+    $('languagePickerDemoValue').textContent = 'Language';
+    resizeLanguagePicker();
+  }
   state.subtitleAuto = auto;
   if (state.mode === 'subtitles') {
     clearTimeout(state.previewTimer);
@@ -478,7 +618,7 @@ async function setSubtitle(subtitlePath, auto = false) {
     state.previewPending = null;
   }
   state.subtitlePath = subtitlePath;
-  elements.subtitleName.textContent = basename(subtitlePath);
+  elements.subtitleName.textContent = displayName || basename(subtitlePath);
   const timing = await api.inspectSubtitle(subtitlePath).catch(() => null);
   if (state.subtitlePath !== subtitlePath) return;
   state.subtitleTiming = timing;
@@ -585,12 +725,15 @@ elements.position.addEventListener('input', () => {
 elements.scale.addEventListener('input', () => { elements.scaleValue.textContent = `${elements.scale.value}%`; saveSubtitleSettings(); updateAutomaticOutput(); schedulePreview(); });
 elements.quality.addEventListener('input', () => {
   saveSubtitleSettings();
-  updateAutomaticOutput();
   refreshQualityDisplay();
+  updateAutomaticOutput();
 });
 elements.windowsEncoder.addEventListener('change', () => {
-  state.preferredEncoder = elements.windowsEncoder.value;
+  const selected = elements.windowsEncoder.value;
+  state.preferredEncoder = selected;
   saveSubtitleSettings();
+  refreshReady();
+  scheduleQualityProfile();
   refreshCodecOptions();
   updateEstimate();
 });
@@ -763,7 +906,7 @@ async function startCompression(isTest = false) {
 
 async function startBurn(isTest = false) {
   beginExport();
-  const quality = Number(elements.quality.value);
+  const quality = qualityProfile ? elements.qualityValue.textContent : '';
   const { clipStart, clipDuration } = exportSample(isTest);
   const outputPath = isTest ? `${dirname(state.videoPath)}${extless(state.videoPath)} — 30s test.mp4` : state.outputPath;
   const modeLabel = clipDuration ? `30-second test from ${formatTime(clipStart)}` : isTest ? 'full-length test' : 'full video';
@@ -773,10 +916,10 @@ async function startBurn(isTest = false) {
     ? autoEncoderLabel() || 'automatic encoding'
     : /videotoolbox/i.test(state.videoEncoder) ? 'Apple VideoToolbox' : 'the selected encoding settings';
   const burnDescription = state.metadata?.isHdr
-    ? `Burning ${modeLabel} in 10-bit HDR with ${hardwareName} (CQ ${quality})…`
+    ? `Burning ${modeLabel} in 10-bit HDR with ${hardwareName}${quality ? ` (${quality})` : ''}…`
     : state.metadata?.bitDepth > 8
-      ? `Burning ${modeLabel} in preserved 10-bit SDR with ${hardwareName} (CQ ${quality})…`
-      : `Burning ${modeLabel} with libass and ${hardwareName} (CQ ${quality})…`;
+      ? `Burning ${modeLabel} in preserved 10-bit SDR with ${hardwareName}${quality ? ` (${quality})` : ''}…`
+      : `Burning ${modeLabel} with libass and ${hardwareName}${quality ? ` (${quality})` : ''}…`;
   setStatus(burnDescription + awakeNote);
   fitWindowToContent();
   try {
@@ -791,7 +934,7 @@ async function startBurn(isTest = false) {
             : result.encoder === 'h264_videotoolbox' ? 'Apple VideoToolbox' : result.encoder === 'libx265' ? (result.tenBit ? 'HEVC Main10' : 'HEVC Main') : 'H.264';
     const hdrNote = result.dolbyVisionConverted ? ' • Dolby Vision converted safely to HDR10-compatible output' : '';
     const testNote = isTest ? `${modeLabel} • ` : '';
-    setStatus(`${testNote}Finished with ${encoderLabel}${hdrNote}: ${basename(result.output)} — click here to show it.`, 'success');
+    setStatus(`${testNote}Finished with ${encoderLabel}${result.qualitySetting ? ` (${result.qualitySetting})` : ''}${hdrNote}: ${basename(result.output)} — click here to show it.`, 'success');
     const output = result.output;
     elements.status.onclick = () => api.revealOutput(output);
   } catch (error) {

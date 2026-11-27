@@ -2,6 +2,10 @@
 
 Release history for Subaroll. Public releases use the `major.minor` format (`v1.0`, `v1.1`, `v1.2`).
 
+## Planned
+
+- Automatic subtitles for videos in English and Spanish.
+
 ## v1.3
 
 Subaroll v1.3 brings a redesigned workspace, automatic subtitle matching, and rebuilt target-size compression to Apple silicon Macs and Windows 11 x64.
@@ -9,6 +13,8 @@ Subaroll v1.3 brings a redesigned workspace, automatic subtitle matching, and re
 
 ### Additional improvements
 
+- Detect embedded text subtitle tracks and matching subtitle files, and offer a language picker when multiple supported languages are available.
+- NVIDIA subtitle burning uses constant QP (CQP); NVIDIA and AMD CQP, Intel ICQ, and CPU CRF reach 10. The quality display shows the encoder's actual setting, including AMD's P-frame value.
 - Fixed update detection for older v1.3 builds and prevented future replacement builds from reusing the same internal update version.
 - Refreshed the vertical workspace with rounded neutral controls. Burn and Compress controls switch together, with smoother slider dragging and less unused space. Encoder and codec menus show available choices.
 - Raised the compression target limit to 750 MB and added a 250 MB slider snap point.

@@ -55,11 +55,14 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             media::tool_status,
+            media::burn_quality_profile,
             media::choose_ffmpeg,
             media::choose_video,
             media::choose_subtitle,
             media::choose_output,
             media::find_subtitle,
+            media::discover_subtitles,
+            media::extract_subtitle,
             media::probe,
             media::inspect_subtitle,
             media::render_preview,

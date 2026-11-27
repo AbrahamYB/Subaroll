@@ -46,6 +46,12 @@
             <button id="videoPicker" class="file-picker" type="button" aria-labelledby="videoLabel videoName"><span id="videoName">Choose video…</span><b>Browse</b></button>
             <label id="subtitleLabel" class="sr-only subtitle-only" for="subtitlePicker">Subtitles</label>
             <button id="subtitlePicker" class="file-picker subtitle-only" type="button" aria-labelledby="subtitleLabel subtitleName"><span id="subtitleName">Choose subtitles…</span><b>Browse</b></button>
+            <div id="languagePickerDemo" class="language-picker-demo subtitle-only" inert aria-hidden="true">
+              <div class="file-picker language-picker-control">
+                <span id="languagePickerDemoValue"></span><i class="language-picker-arrow" aria-hidden="true"></i>
+                <select aria-label="Subtitle language"></select>
+              </div>
+            </div>
           </div>
           <section class="adjustments subtitle-only" aria-label="Subtitle adjustments">
             <div class="adjustment-sliders">
@@ -95,7 +101,7 @@
               </select>
             </div>
             <div class="slider export-quality subtitle-only" data-marks="90:Recommended">
-              <div class="hd"><label for="quality">Encoding quality</label><output id="qualityValue" for="quality">CQ 90</output></div>
+              <div class="hd"><label for="quality">Quality</label><output id="qualityValue" for="quality">—</output></div>
               <input id="quality" aria-describedby="qualityHint" type="range" min="60" max="100" value="90" step="1">
               <p id="qualityHint" class="sr-only"></p>
             </div>
@@ -125,6 +131,7 @@
     </div>
   </main>
   <script src="tauri-api.js"></script>
+  <script src="languages.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

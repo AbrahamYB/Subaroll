@@ -3,10 +3,13 @@ const { listen } = window.__TAURI__.event;
 
 window.subaroll = {
   toolStatus: () => invoke('tool_status'),
+  burnQualityProfile: (metadata, settings) => invoke('burn_quality_profile', { metadata, settings }),
   chooseFfmpeg: () => invoke('choose_ffmpeg'),
   chooseVideo: () => invoke('choose_video'),
   chooseSubtitle: () => invoke('choose_subtitle'),
   findSubtitle: videoPath => invoke('find_subtitle', { videoPath }),
+  discoverSubtitles: videoPath => invoke('discover_subtitles', { videoPath }),
+  extractSubtitle: (videoPath, streamIndex) => invoke('extract_subtitle', { videoPath, streamIndex }),
   chooseOutput: suggested => invoke('choose_output', { suggested }),
   probe: videoPath => invoke('probe', { videoPath }),
   inspectSubtitle: subtitlePath => invoke('inspect_subtitle', { subtitlePath }),

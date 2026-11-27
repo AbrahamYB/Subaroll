@@ -28,6 +28,7 @@ const MAX_FONT_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 pub struct AppState {
     export: Arc<Mutex<ExportJob>>,
     media_tools: Mutex<MediaTools>,
+    extracted_subtitles: Mutex<Vec<(String, u64, tempfile::NamedTempFile)>>,
 }
 
 const EXPORT_CANCELLED: &str = "Export cancelled.";
@@ -248,6 +249,7 @@ pub struct ExportResult {
     font_count: usize,
     encoder: String,
     quality: i64,
+    quality_setting: String,
     hdr: bool,
     ten_bit: bool,
     dolby_vision_converted: bool,
@@ -590,11 +592,12 @@ fn episode_key(stem: &str) -> Option<(String, Option<u32>, u32)> {
 
 /// Same-name subtitle beside the video (or in Subs/Subtitles), else one with the same
 /// series + season + episode. Offline, read-only; a lone "episode" never matches an S/E video.
-fn find_sidecar(video: &Path) -> Option<PathBuf> {
-    let dir = video.parent()?;
-    let stem = video.file_stem()?.to_string_lossy().to_lowercase();
+fn find_sidecars(video: &Path) -> Vec<PathBuf> {
+    let Some(dir) = video.parent() else { return Vec::new() };
+    let Some(video_stem) = video.file_stem() else { return Vec::new() };
+    let stem = video_stem.to_string_lossy().to_lowercase();
     let want = episode_key(&stem);
-    let mut best: Option<(u8, usize, String, PathBuf)> = None;
+    let mut matches: Vec<(u8, usize, String, PathBuf)> = Vec::new();
     for folder in [dir.to_path_buf(), dir.join("Subs"), dir.join("Subtitles")] {
         let Ok(entries) = fs::read_dir(&folder) else { continue };
         for entry in entries.flatten().take(5000) {
@@ -604,7 +607,8 @@ fn find_sidecar(video: &Path) -> Option<PathBuf> {
             let path = entry.path();
             let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
             let Some(ext_rank) = SUBTITLE_EXTENSIONS.iter().position(|e| *e == ext) else { continue };
-            let name = path.file_stem()?.to_string_lossy().to_lowercase();
+            let Some(name) = path.file_stem() else { continue };
+            let name = name.to_string_lossy().to_lowercase();
             // "ep.en" (language suffix) still counts as the same name
             let exact = name == stem || name.strip_prefix(&format!("{stem}.")).is_some();
             let matched = exact
@@ -620,12 +624,15 @@ fn find_sidecar(video: &Path) -> Option<PathBuf> {
                 continue;
             }
             let key = (u8::from(!exact), ext_rank, name, path);
-            if best.as_ref().map_or(true, |b| (key.0, key.1, &key.2) < (b.0, b.1, &b.2)) {
-                best = Some(key);
-            }
+            matches.push(key);
         }
     }
-    best.map(|b| b.3)
+    matches.sort();
+    matches.into_iter().map(|entry| entry.3).collect()
+}
+
+fn find_sidecar(video: &Path) -> Option<PathBuf> {
+    find_sidecars(video).into_iter().next()
 }
 
 #[tauri::command]
@@ -633,6 +640,81 @@ pub fn find_subtitle(video_path: String) -> String {
     find_sidecar(Path::new(&video_path))
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtitleTrack {
+    path: Option<String>,
+    stream_index: Option<u64>,
+    language: String,
+    title: String,
+    supported: bool,
+    forced: bool,
+    codec: String,
+}
+
+fn discover_subtitle_tracks(ffprobe: &str, video_path: &str) -> Result<Vec<SubtitleTrack>, String> {
+    let bytes = run_output(ffprobe, &["-v", "error", "-print_format", "json", "-show_streams", video_path].map(str::to_owned))?;
+    let data: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    let mut tracks = Vec::new();
+    for path in find_sidecars(Path::new(video_path)) {
+        let title = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let forced = title.to_ascii_lowercase().split(|c: char| !c.is_ascii_alphanumeric()).any(|part| part == "forced");
+        tracks.push(SubtitleTrack { path: Some(path.to_string_lossy().into_owned()), stream_index: None, language: String::new(), title, supported: true, forced, codec: String::new() });
+    }
+    for stream in data["streams"].as_array().into_iter().flatten().filter(|stream| stream["codec_type"] == "subtitle") {
+        let Some(index) = stream["index"].as_u64() else { continue };
+        let codec = stream["codec_name"].as_str().unwrap_or("");
+        let supported = matches!(codec, "subrip" | "ass" | "ssa" | "mov_text" | "webvtt" | "text");
+        tracks.push(SubtitleTrack {
+            path: None, stream_index: Some(index),
+            language: stream["tags"]["language"].as_str().unwrap_or("").to_owned(),
+            title: stream["tags"]["title"].as_str().unwrap_or("").to_owned(),
+            supported, forced: stream["disposition"]["forced"].as_i64() == Some(1), codec: codec.to_owned(),
+        });
+    }
+    Ok(tracks)
+}
+
+#[tauri::command]
+pub async fn discover_subtitles(state: State<'_, AppState>, video_path: String) -> Result<Vec<SubtitleTrack>, String> {
+    let tools = tools_for(&state)?;
+    tauri::async_runtime::spawn_blocking(move || discover_subtitle_tracks(&tools.ffprobe, &video_path))
+        .await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn extract_subtitle(state: State<'_, AppState>, video_path: String, stream_index: u64) -> Result<String, String> {
+    {
+        let cache = state.extracted_subtitles.lock().map_err(|_| "Subtitle cache unavailable")?;
+        if let Some((_, _, file)) = cache.iter().find(|(video, index, _)| video == &video_path && *index == stream_index) {
+            return Ok(file.path().to_string_lossy().into_owned());
+        }
+        if cache.len() >= 64 { return Err("Too many extracted subtitle tracks in this session; restart the app to clear them.".into()); }
+    }
+    let tools = tools_for(&state)?;
+    let cache_key = video_path.clone();
+    let (path, file) = tauri::async_runtime::spawn_blocking(move || extract_subtitle_file(&tools, &video_path, stream_index))
+        .await.map_err(|error| error.to_string())??;
+    state.extracted_subtitles.lock().map_err(|_| "Subtitle cache unavailable")?.push((cache_key, stream_index, file));
+    Ok(path)
+}
+
+fn extract_subtitle_file(tools: &Tools, video_path: &str, stream_index: u64) -> Result<(String, tempfile::NamedTempFile), String> {
+        let track = discover_subtitle_tracks(&tools.ffprobe, &video_path)?.into_iter()
+            .find(|track| track.stream_index == Some(stream_index) && track.supported)
+            .ok_or("Subtitle track is unavailable or image-based.")?;
+        let styled = matches!(track.codec.as_str(), "ass" | "ssa");
+        let file = tempfile::Builder::new().prefix("subaroll-subtitle-").suffix(if styled { ".ass" } else { ".srt" }).tempfile().map_err(|error| error.to_string())?;
+        let path = file.path().to_string_lossy().into_owned();
+        run_output(&tools.ffmpeg, &["-v".to_owned(), "error".to_owned(), "-y".to_owned(), "-i".to_owned(), video_path.to_owned(),
+            "-map".to_owned(), format!("0:{stream_index}"), "-c:s".to_owned(), if styled { "ass" } else { "srt" }.to_owned(),
+            "-fs".to_owned(), (MAX_SUBTITLE_BYTES + 1).to_string(), path.clone()])?;
+        if fs::metadata(&path).map_err(|error| error.to_string())?.len() > MAX_SUBTITLE_BYTES {
+            return Err("Extracted subtitle exceeds the 16 MiB safety limit.".to_owned());
+        }
+        Ok((path, file))
 }
 
 #[tauri::command]
@@ -1422,6 +1504,17 @@ fn source_aware_ceiling_args(m: &MediaMetadata, quality: i64) -> Vec<String> {
     ]
 }
 
+fn extend_quality_to_ten(quality: i64, legacy: i64, recommended: i64) -> i64 {
+    if quality <= 90 { legacy } else {
+        (recommended as f64 + (10 - recommended) as f64 * (quality - 90) as f64 / 10.0).round() as i64
+    }
+}
+
+fn software_crf(base: i64, quality: i64) -> i64 {
+    let legacy = (base as f64 - quality as f64 * 0.3).round() as i64;
+    extend_quality_to_ten(quality, legacy, base - 27)
+}
+
 fn windows_encoder_args(
     hardware: &str,
     ten_bit: bool,
@@ -1429,9 +1522,14 @@ fn windows_encoder_args(
     preset: &str,
     m: &MediaMetadata,
 ) -> Vec<String> {
-    // CQ 90 maps to CTT/Smoothie's high-quality values: NVENC CQ 18,
+    // The legacy slider's 90 maps to high-quality values: NVENC CQP 18,
     // AMF HEVC 18/20/24, and QSV HEVC global_quality 18.
     let cq = (40.0 - quality as f64 * 0.244).round().clamp(14.0, 26.0) as i64;
+    let amf_p = if ten_bit {
+        extend_quality_to_ten(quality, cq + 2, 20)
+    } else {
+        extend_quality_to_ten(quality, cq, 18)
+    };
     let pixel_format = if ten_bit { "p010le" } else { "yuv420p" };
     let nvenc_preset = match preset {
         "fast" => "p4",
@@ -1457,13 +1555,9 @@ fn windows_encoder_args(
             "-tune".into(),
             "hq".into(),
             "-rc".into(),
-            "vbr".into(),
-            "-cq".into(),
-            cq.to_string(),
-            "-b:v".into(),
-            "0".into(),
-            "-spatial-aq".into(),
-            "1".into(),
+            "constqp".into(),
+            "-qp".into(),
+            extend_quality_to_ten(quality, cq, 18).to_string(),
             "-pix_fmt".into(),
             pixel_format.into(),
         ]
@@ -1476,23 +1570,11 @@ fn windows_encoder_args(
             "-rc".into(),
             "cqp".into(),
             "-qp_i".into(),
-            if ten_bit {
-                cq.to_string()
-            } else {
-                (cq - 2).max(0).to_string()
-            },
+            (amf_p - 2).max(10).to_string(),
             "-qp_p".into(),
-            if ten_bit {
-                (cq + 2).to_string()
-            } else {
-                cq.to_string()
-            },
+            amf_p.to_string(),
             "-qp_b".into(),
-            if ten_bit {
-                (cq + 6).to_string()
-            } else {
-                (cq + 4).to_string()
-            },
+            (amf_p + 4).to_string(),
             "-pix_fmt".into(),
             pixel_format.into(),
         ]
@@ -1504,9 +1586,9 @@ fn windows_encoder_args(
             qsv_preset.into(),
             "-global_quality".into(),
             if ten_bit {
-                cq.to_string()
+                extend_quality_to_ten(quality, cq, 18).to_string()
             } else {
-                (cq - 3).max(1).to_string()
+                extend_quality_to_ten(quality, (cq - 3).max(1), 15).to_string()
             },
             "-look_ahead".into(),
             "1".into(),
@@ -1526,7 +1608,9 @@ fn windows_encoder_args(
             "hvc1".into(),
         ]);
     }
-    args.extend(source_aware_ceiling_args(m, quality));
+    if !hardware.ends_with("_nvenc") {
+        args.extend(source_aware_ceiling_args(m, quality));
+    }
     args.extend(color_args(m));
     args
 }
@@ -1580,7 +1664,7 @@ fn encoder_args(
         a.extend(color_args(m));
         ("hevc_videotoolbox".into(), a, ten)
     } else if (m.width > 4096 || m.height > 4096) && supports_encoder(ffmpeg, "libx265") {
-        let crf = (41.0 - quality as f64 * 0.3).round() as i64;
+        let crf = software_crf(41, quality);
         let mut args = [
             "-c:v",
             "libx265",
@@ -1601,7 +1685,7 @@ fn encoder_args(
         ("libx265".into(), args, ten)
     } else if let Some(encoder) = windows_encoder {
         if encoder == "libx265" {
-            let crf = (47.0 - quality as f64 * 0.3).round() as i64;
+            let crf = software_crf(47, quality);
             let cpu_preset = match settings.windows_preset.as_str() {
                 "fast" => "fast",
                 "balanced" => "medium",
@@ -1620,7 +1704,7 @@ fn encoder_args(
             a.extend(color_args(m));
             return ("libx265".into(), a, true);
         }
-        let crf = (43.0 - quality as f64 * 0.3).round() as i64;
+        let crf = software_crf(43, quality);
         let cpu_preset = match settings.windows_preset.as_str() {
             "fast" => "fast",
             "balanced" => "medium",
@@ -1641,7 +1725,7 @@ fn encoder_args(
             false,
         );
     } else if ten && supports_encoder(ffmpeg, "libx265") {
-        let crf = (41.0 - quality as f64 * 0.3).round() as i64;
+        let crf = software_crf(41, quality);
         a = vec![
             "-c:v",
             "libx265",
@@ -1658,7 +1742,7 @@ fn encoder_args(
         a.extend(color_args(m));
         ("libx265".into(), a, true)
     } else {
-        let crf = (41.0 - quality as f64 * 0.3).round() as i64;
+        let crf = software_crf(41, quality);
         (
             "libx264".into(),
             vec![
@@ -1677,6 +1761,72 @@ fn encoder_args(
             false,
         )
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QualityProfile {
+    encoder: String,
+    values: Vec<String>,
+    hint: String,
+}
+
+fn arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    args.windows(2).find(|pair| pair[0] == flag).map(|pair| pair[1].as_str())
+}
+
+fn quality_setting_from_args(encoder: &str, args: &[String]) -> Option<String> {
+    if encoder.ends_with("_videotoolbox") {
+        Some(format!("Quality {}", arg_value(args, "-q:v")?))
+    } else if encoder.starts_with("libx") {
+        Some(format!("CRF {}", arg_value(args, "-crf")?))
+    } else if encoder.ends_with("_nvenc") {
+        Some(format!("CQP {}", arg_value(args, "-qp")?))
+    } else if encoder.ends_with("_qsv") {
+        Some(format!("ICQ {}", arg_value(args, "-global_quality")?))
+    } else if encoder.ends_with("_amf") {
+        Some(format!("CQP {}", arg_value(args, "-qp_p")?))
+    } else { None }
+}
+
+fn quality_profile_for_args(encoder: &str, args: &[String], ten: bool, metadata: &MediaMetadata) -> Result<QualityProfile, String> {
+    let cpu_base = if encoder.starts_with("libx") {
+        Some(arg_value(args, "-crf").ok_or("Missing CRF")?.parse::<i64>().map_err(|_| "Invalid CRF")? + 27)
+    } else { None };
+    let values = (60..=100).map(|quality| {
+        if encoder.ends_with("_videotoolbox") {
+            format!("Quality {}", quality.min(95))
+        } else if let Some(base) = cpu_base {
+            format!("CRF {}", software_crf(base, quality))
+        } else {
+            let params = windows_encoder_args(encoder, ten, quality, "quality", metadata);
+            quality_setting_from_args(encoder, &params).unwrap_or_default()
+        }
+    }).collect();
+    let hint = if encoder.ends_with("_amf") {
+        "CQP shows the P-frame QP; I- and B-frame QPs use offsets. Lower values mean higher quality. A source-aware bitrate ceiling may also apply."
+    } else if encoder.ends_with("_nvenc") {
+        "NVIDIA constant QP: lower values mean higher quality and generally larger files."
+    } else if encoder.ends_with("_videotoolbox") {
+        "VideoToolbox quality: higher values mean higher quality; the practical maximum is 95. A source-aware bitrate ceiling may also apply."
+    } else if encoder.starts_with("libx") {
+        "CRF: lower values mean higher quality."
+    } else {
+        "Lower values mean higher quality. Hardware encoding may also apply a source-aware bitrate ceiling."
+    };
+    Ok(QualityProfile { encoder: encoder.into(), values, hint: hint.into() })
+}
+
+#[tauri::command]
+pub async fn burn_quality_profile(state: State<'_, AppState>, metadata: Option<MediaMetadata>, settings: SubtitleSettings) -> Result<QualityProfile, String> {
+    let tools = tools_for(&state)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let metadata = metadata.unwrap_or_default();
+        let mut sample = settings;
+        sample.quality = 90.0;
+        let (encoder, args, ten) = encoder_args(&tools.ffmpeg, &metadata, &sample);
+        quality_profile_for_args(&encoder, &args, ten, &metadata)
+    }).await.map_err(|error| error.to_string())?
 }
 
 fn run_progress(
@@ -1828,6 +1978,7 @@ fn burn_video(
     let (start, duration) = clip.unwrap_or((0.0, 0.0));
     let filters = burn_filters(&p, &m, input.settings.delay_seconds, start);
     let (mut encoder, enc, mut ten_bit) = encoder_args(&tools.ffmpeg, &m, &input.settings);
+    let mut used_args = enc.clone();
     let ext = Path::new(&input.output_path)
         .extension()
         .and_then(|x| x.to_str())
@@ -1899,6 +2050,7 @@ fn burn_video(
             ..input.settings.clone()
         };
         let (fallback, args, fallback_ten_bit) = encoder_args(&tools.ffmpeg, &m, &software);
+        used_args = args.clone();
         run_burn(args).map_err(|error| {
             if error == EXPORT_CANCELLED {
                 error
@@ -1935,11 +2087,13 @@ fn burn_video(
     }
     staged.commit(&input.output_path, active)?;
     emit(1.0);
+    let quality_setting = quality_setting_from_args(&encoder, &used_args).unwrap_or_default();
     Ok(ExportResult {
         output: input.output_path,
         font_count: p.font_count,
         encoder,
         quality: input.settings.quality.round() as i64,
+        quality_setting,
         hdr: m.is_hdr,
         ten_bit,
         dolby_vision_converted: m.dolby_vision,
@@ -2833,6 +2987,102 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires FFmpeg and FFprobe"]
+    fn real_subtitle_tracks_discover_and_extract() {
+        let tools = tools_for(&AppState::default()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let en = dir.path().join("english.srt");
+        let es = dir.path().join("spanish.srt");
+        fs::write(&en, "1\n00:00:00,000 --> 00:00:01,000\nHello there\n").unwrap();
+        fs::write(&es, "1\n00:00:00,000 --> 00:00:01,000\nHola amigo\n").unwrap();
+        let video = dir.path().join("video.mkv");
+        let args = vec!["-v".into(), "error".into(), "-y".into(), "-f".into(), "lavfi".into(), "-i".into(), "color=s=160x90:r=10:d=1".into(),
+            "-i".into(), en.to_string_lossy().into_owned(), "-i".into(), es.to_string_lossy().into_owned(),
+            "-map".into(), "0:v".into(), "-map".into(), "1:s".into(), "-map".into(), "2:s".into(),
+            "-c:v".into(), "libx264".into(), "-c:s".into(), "srt".into(),
+            "-metadata:s:s:0".into(), "language=eng".into(), "-metadata:s:s:1".into(), "language=spa".into(), video.to_string_lossy().into_owned()];
+        run_output(&tools.ffmpeg, &args).unwrap();
+        fs::write(dir.path().join("video.pol.srt"), "1\n00:00:00,000 --> 00:00:01,000\nCzesc\n").unwrap();
+        let tracks = discover_subtitle_tracks(&tools.ffprobe, video.to_str().unwrap()).unwrap();
+        assert_eq!(tracks.len(), 3);
+        assert!(tracks[0].path.as_deref().unwrap().ends_with("video.pol.srt"));
+        let english = tracks.iter().find(|t| t.language == "eng").unwrap();
+        let spanish = tracks.iter().find(|t| t.language == "spa").unwrap();
+        assert!(english.supported && spanish.supported);
+        let (english_path, _english_file) = extract_subtitle_file(&tools, video.to_str().unwrap(), english.stream_index.unwrap()).unwrap();
+        let (spanish_path, _spanish_file) = extract_subtitle_file(&tools, video.to_str().unwrap(), spanish.stream_index.unwrap()).unwrap();
+        assert!(fs::read_to_string(english_path).unwrap().contains("Hello there"));
+        assert!(fs::read_to_string(spanish_path).unwrap().contains("Hola amigo"));
+        assert!(extract_subtitle_file(&tools, video.to_str().unwrap(), 999).is_err());
+    }
+
+    #[test]
+    fn displayed_quality_matches_encoder_arguments() {
+        let metadata = MediaMetadata::default();
+        for encoder in ["h264_nvenc", "hevc_nvenc", "h264_amf", "hevc_amf", "h264_qsv", "hevc_qsv"] {
+            for ten in [false, true] {
+                let sample = windows_encoder_args(encoder, ten, 90, "quality", &metadata);
+                let profile = quality_profile_for_args(encoder, &sample, ten, &metadata).unwrap();
+                for quality in 60..=100 {
+                    let actual = windows_encoder_args(encoder, ten, quality, "quality", &metadata);
+                    assert_eq!(profile.values[(quality - 60) as usize], quality_setting_from_args(encoder, &actual).unwrap(), "{encoder}, ten-bit={ten}, quality={quality}");
+                    if encoder.ends_with("_nvenc") {
+                        assert_eq!(arg_value(&actual, "-rc"), Some("constqp"));
+                        assert_eq!(profile.values[(quality - 60) as usize], format!("CQP {}", arg_value(&actual, "-qp").unwrap()));
+                        assert!(!actual.iter().any(|value| matches!(value.as_str(), "-cq" | "-maxrate" | "-b:v")));
+                    }
+                }
+            }
+        }
+        for base in [41, 43, 47] {
+            let sample = vec!["-crf".into(), (base - 27).to_string()];
+            let profile = quality_profile_for_args("libx265", &sample, true, &metadata).unwrap();
+            for quality in 60..=100 {
+                let crf = software_crf(base, quality);
+                assert_eq!(profile.values[(quality - 60) as usize], format!("CRF {crf}"));
+            }
+        }
+        let profile = quality_profile_for_args("hevc_videotoolbox", &[], false, &metadata).unwrap();
+        assert_eq!(profile.values[30], "Quality 90");
+        assert_eq!(profile.values[40], "Quality 95");
+    }
+
+    #[test]
+    fn quality_minimums_are_ten_and_recommended_values_stay_the_same() {
+        let metadata = MediaMetadata::default();
+        for encoder in ["h264_nvenc", "hevc_nvenc", "h264_qsv", "hevc_qsv"] {
+            for ten in [false, true] {
+                let flag = if encoder.ends_with("_nvenc") { "-qp" } else { "-global_quality" };
+                let expected = if encoder.ends_with("_qsv") && !ten { "15" } else { "18" };
+                let default = windows_encoder_args(encoder, ten, 90, "quality", &metadata);
+                assert_eq!(arg_value(&default, flag), Some(expected));
+                for quality in 60..=100 {
+                    let args = windows_encoder_args(encoder, ten, quality, "quality", &metadata);
+                    let value = arg_value(&args, flag).unwrap().parse::<i64>().unwrap();
+                    assert!(value >= 10);
+                    if quality == 100 { assert_eq!(value, 10); }
+                }
+            }
+        }
+        for base in [41, 43, 47] {
+            assert_eq!(software_crf(base, 90), base - 27);
+            for quality in 60..=100 { assert!(software_crf(base, quality) >= 10); }
+            assert_eq!(software_crf(base, 100), 10);
+        }
+        let amd = windows_encoder_args("h264_amf", false, 90, "quality", &metadata);
+        assert_eq!(quality_setting_from_args("h264_amf", &amd).as_deref(), Some("CQP 18"));
+        assert_eq!(arg_value(&amd, "-qp_i"), Some("16"));
+        assert_eq!(arg_value(&amd, "-qp_b"), Some("22"));
+        for encoder in ["h264_amf", "hevc_amf"] {
+            for ten in [false, true] {
+                let max = windows_encoder_args(encoder, ten, 100, "quality", &metadata);
+                assert_eq!(quality_setting_from_args(encoder, &max).as_deref(), Some("CQP 10"));
+                assert_eq!(arg_value(&max, "-qp_i"), Some("10"));
+            }
+        }
+    }
+
+    #[test]
     fn cancelled_export_keeps_the_existing_output_and_removes_staging() {
         let dir = tempfile::tempdir().unwrap();
         let output = dir.path().join("output.mp4");
@@ -3585,6 +3835,7 @@ Dialogue: broken";
                     result.encoder, expected,
                     "selected hardware may not silently fall back"
                 );
+                assert_eq!(result.quality_setting, format!("{} {}", if choice == "software" { "CRF" } else { "Quality" }, quality_value));
                 assert_eq!(result.quality, quality as i64);
                 assert_eq!(
                     frame_times(&tools, out),
@@ -4020,7 +4271,7 @@ Dialogue: broken";
         let nvenc = windows_encoder_args("hevc_nvenc", true, 90, "quality", &metadata);
         let amf = windows_encoder_args("hevc_amf", true, 90, "quality", &metadata);
         let qsv = windows_encoder_args("hevc_qsv", true, 90, "quality", &metadata);
-        assert!(nvenc.contains(&"-cq".into()) && nvenc.contains(&"p7".into()));
+        assert!(nvenc.contains(&"-qp".into()) && nvenc.contains(&"p7".into()));
         assert!(amf.contains(&"-qp_i".into()) && amf.contains(&"quality".into()));
         assert!(qsv.contains(&"-global_quality".into()) && qsv.contains(&"-look_ahead".into()));
         let value_after = |args: &[String], key: &str| {
@@ -4029,7 +4280,10 @@ Dialogue: broken";
                 .map(|index| args[index + 1].clone())
                 .unwrap()
         };
-        assert_eq!(value_after(&nvenc, "-cq"), "18");
+        assert_eq!(value_after(&nvenc, "-rc"), "constqp");
+        assert_eq!(value_after(&nvenc, "-qp"), "18");
+        assert!(!nvenc.contains(&"-cq".into()));
+        assert!(!nvenc.contains(&"-maxrate".into()));
         assert_eq!(value_after(&amf, "-qp_i"), "18");
         assert_eq!(value_after(&amf, "-qp_p"), "20");
         assert_eq!(value_after(&amf, "-qp_b"), "24");
@@ -4037,8 +4291,9 @@ Dialogue: broken";
         for recipe in [&nvenc, &amf, &qsv] {
             assert!(recipe.contains(&"main10".into()));
             assert!(recipe.contains(&"p010le".into()));
-            assert!(recipe.contains(&"-maxrate".into()));
         }
+        assert!(amf.contains(&"-maxrate".into()));
+        assert!(qsv.contains(&"-maxrate".into()));
     }
 
     #[test]

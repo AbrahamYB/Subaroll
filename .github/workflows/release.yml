@@ -84,6 +84,22 @@ jobs:
       - name: Run automated tests
         run: npm test
 
+      - name: Test real subtitle track detection on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $testTools = Join-Path $env:RUNNER_TEMP 'subaroll-subtitle-test-tools'
+          New-Item -ItemType Directory -Force -Path $testTools | Out-Null
+          Copy-Item 'src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe' (Join-Path $testTools 'ffmpeg.exe')
+          Copy-Item 'src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe' (Join-Path $testTools 'ffprobe.exe')
+          $env:SUBAROLL_FFMPEG = Join-Path $testTools 'ffmpeg.exe'
+          node scripts/run-cargo.js test --manifest-path src-tauri/Cargo.toml real_subtitle_tracks_discover_and_extract -- --ignored
+          if ($LASTEXITCODE -ne 0) { throw 'Subtitle track test failed.' }
+
+      - name: Test real subtitle track detection on macOS
+        if: runner.os == 'macOS'
+        run: node scripts/run-cargo.js test --manifest-path src-tauri/Cargo.toml real_subtitle_tracks_discover_and_extract -- --ignored
+
       - name: Derive major.minor asset version from release tag
         id: release_version
         shell: bash
