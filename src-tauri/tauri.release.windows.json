@@ -2,15 +2,17 @@
   "bundle": {
     "externalBin": [
       "binaries/ffmpeg",
-      "binaries/ffprobe"
+      "binaries/ffprobe",
+      "binaries/subaroll-asr"
     ],
     "windows": {
       "webviewInstallMode": {
-        "type": "offlineInstaller"
+        "type": "downloadBootstrapper"
       }
     },
     "resources": [
-      "../THIRD_PARTY_NOTICES.md"
+      "../THIRD_PARTY_NOTICES.md",
+      "binaries/PARAKEET-LICENSE.txt"
     ]
   }
 }

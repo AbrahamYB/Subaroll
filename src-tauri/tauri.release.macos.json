@@ -1,5 +1,7 @@
 {
   "bundle": {
+    "externalBin": ["binaries/ffmpeg", "binaries/ffprobe", "binaries/subaroll-asr"],
+    "resources": {"binaries/FFMPEG-LICENSE.txt": "FFMPEG-LICENSE.txt", "binaries/PARAKEET-LICENSE.txt": "PARAKEET-LICENSE.txt", "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"},
     "macOS": {
       "minimumSystemVersion": "11.0",
       "signingIdentity": "-"
