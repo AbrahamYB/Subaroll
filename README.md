@@ -1,37 +1,36 @@
 # Subaroll
 
-Subaroll burns external subtitle files into video or compresses video to a chosen file-size target. It is a native Rust/Tauri desktop app for Apple-silicon Macs and Windows 11, using FFmpeg and libass for video and subtitle rendering.
+Subaroll burns subtitles into video and compresses video to a chosen file-size target. It is a Rust/Tauri desktop app for Apple-silicon Macs and Windows 11, using FFmpeg and libass for video and subtitle rendering.
 
 ## Features
 
 ### Subtitle burn-in
 
-- Supports SRT, ASS, SSA, VTT, SUB, and SMI subtitle files.
-- Preserves authored ASS styling, including fonts, colors, outlines, shadows, positioning, and signs where supported. Size and position controls adjust dialogue while keeping authored signs in place.
-- Plain-text subtitles use a consistent white, outlined preset; subtitle delay changes cue timing without shifting the video or audio.
-- Scrub a preview, adjust subtitle position against the full video frame, and render a short test before exporting.
-- Cinematic sources receive bottom padding when needed, so subtitles can be positioned in the padded frame without stretching the picture.
-- Burn-in exports preserve the source's resolution, aspect ratio, frame timing, and HDR/10-bit signaling where the selected format and encoder support them.
+- Open SRT, ASS, SSA, VTT, SUB, and SMI subtitle files, or select a supported embedded text subtitle track. Image-based subtitle tracks are not supported by the language picker.
+- Matching subtitle files are found beside the video and in nearby `Subs` or `Subtitles` folders. When multiple supported languages are detected, the language picker shows the available tracks.
+- Preview the rendered subtitles while adjusting delay, position, and size. A 30-second test exports the whole clip when it is shorter than 30 seconds.
+- Preserve authored ASS styling and adjust dialogue while keeping signs in place where supported. Plain-text subtitles use a white, outlined preset.
+- Preserve source resolution, aspect ratio, frame timing, and HDR/10-bit signaling where supported. Wide cinematic sources can receive lower padding for subtitles without stretching the picture.
+- Select an available encoder or use Auto. Burn quality shows the selected encoder's actual setting: NVIDIA CQP, AMD CQP, Intel ICQ, CPU CRF, or Apple VideoToolbox quality. NVIDIA and AMD CQP, Intel ICQ, and CPU CRF reach 10; AMD displays the P-frame QP, with offsets for other frame types.
 
 ### File-size compression
 
-- Set a target size; Subaroll calculates a bitrate budget and chooses a suitable output resolution and frame rate without upscaling.
-- Resolution is retained when the budget can support it. Higher frame rates are kept when the bitrate budget allows; frame rate is reduced only when required by a constrained target.
-- On Windows, Auto prefers a usable hardware AV1 encoder, then falls back to compatible hardware encoding or CPU encoding. NVIDIA NVENC, Intel Quick Sync, and AMD AMF options are detected and checked before use.
-- NVIDIA compression uses CQP 20 with a calculated correction pass when necessary to meet the size target. CPU encoding uses a slower two-pass mode for tighter size targeting.
-- On macOS, subtitle burn-in uses VideoToolbox hardware encoding. Compression can use Apple VideoToolbox or the CPU encoder (x264).
-- On Windows, below about 1 Mbps of video, compression uses the CPU encoder (x264, two-pass): the GPU encoders cannot hold a size that small, and x264 can. On macOS, Apple VideoToolbox is tried first at any size, with the CPU encoder as the fallback if the size is missed.
+- Choose a target from **1 to 750 MB**, with snap points at 25, 50, 100, and 250 MB. The app estimates resolution and video bitrate as the target changes.
+- Compression preserves source frame timing and chooses resolution according to the bitrate budget without upscaling. The 30-second test uses the planned settings for the full video.
+- Choose Auto, H.264, or hardware AV1 when supported. On Windows, available NVIDIA NVENC, Intel Quick Sync, and AMD AMF encoders are detected; on macOS, compression can use Apple VideoToolbox or CPU encoding.
+- The selected size is a ceiling. Targets of 5 MB and above use decimal MB with a 1% margin; smaller targets use 1,048,576 bytes per MB. Targets that cannot provide at least 150 kbps of video are refused before encoding.
+- NVIDIA can try multiple CQP values for short exports; long exports use bitrate control to avoid repeated full-length passes. Hardware encoding can retry or fall back to two-pass CPU encoding when needed to meet the target.
 
-## Install 1.1
+## Install 1.3
 
-- **macOS 11 or newer, Apple silicon only (M1 or newer):** download [Subaroll 1.1 for macOS](https://github.com/AbrahamYB/Subaroll/releases/download/v1.1/Subaroll_1.1_aarch64.dmg), drag Subaroll into Applications, then right-click the app and choose **Open** on first launch. Install FFmpeg once with `brew install ffmpeg-full`.
-- **Windows 11 x64:** download the [setup EXE](https://github.com/AbrahamYB/Subaroll/releases/download/v1.1/Subaroll_1.1_x64-setup.exe) (recommended) or [MSI installer](https://github.com/AbrahamYB/Subaroll/releases/download/v1.1/Subaroll_1.1_x64.msi). FFmpeg and FFprobe are included. If SmartScreen appears, choose **More info → Run anyway**.
+- **macOS 11 or newer, Apple silicon only (M1 or newer):** download [Subaroll 1.3 for macOS](https://github.com/AbrahamYB/Subaroll/releases/download/v1.3/Subaroll_1.3_aarch64.dmg), drag Subaroll into Applications, then right-click the app and choose **Open** on first launch. Install a full FFmpeg build with libass, such as Homebrew's `ffmpeg-full`.
+- **Windows 11 x64:** download the [setup EXE](https://github.com/AbrahamYB/Subaroll/releases/download/v1.3/Subaroll_1.3_x64-setup.exe) or [MSI installer](https://github.com/AbrahamYB/Subaroll/releases/download/v1.3/Subaroll_1.3_x64.msi). FFmpeg and FFprobe are included. If SmartScreen appears, choose **More info → Run anyway**.
 
 The release installers are unsigned and not notarized. Windows release packages include the pinned FFmpeg build documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## App updates
 
-Subaroll checks GitHub Releases when it opens. When a signed update is available, select **Install v…** in the status row; the app downloads and installs it, then restarts. Windows installs the update in passive mode. Updates are verified with Subaroll's embedded public key before installation. Earlier v1.1 installers predate the updater and must be replaced once with this consolidated updater-enabled v1.1 build; subsequent releases can be installed in the app.
+Subaroll checks GitHub Releases when it opens. When an update is available, select **Install v…**; the app downloads and verifies the signed update, installs it, then restarts. Windows installs updates in passive mode. Builds without the updater require a one-time manual installation of an updater-enabled version.
 
 ### macOS first launch
 
@@ -49,7 +48,7 @@ Then open Subaroll from Applications. This removes the quarantine attribute from
 2. Run `npm install` once.
 3. Run `npm start`.
 
-On macOS, Subaroll automatically prefers Homebrew's `ffmpeg-full`. If FFmpeg is installed elsewhere, choose its executable from the app.
+On macOS, Subaroll automatically prefers Homebrew's `ffmpeg-full`.
 
 ## Build
 
@@ -57,7 +56,7 @@ On macOS, Subaroll automatically prefers Homebrew's `ffmpeg-full`. If FFmpeg is 
 - Windows, run on Windows: `npm run build:win`
 - Run automated checks: `npm test`
 
-Release builds are produced natively by GitHub Actions: ARM64 on macOS and x64 on Windows. Subaroll is built with Rust and Tauri; releases do not include Electron.
+Release builds are produced natively by GitHub Actions: ARM64 on macOS and x64 on Windows.
 
 ## Changelogs
 
